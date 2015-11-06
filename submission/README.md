@@ -1,1 +1,1 @@
-This directory will contain files generated in the `03_make_predictions.ipynb` notebook.
+This directory holds data generated in the `02_build_model.ipynb` notebook.
