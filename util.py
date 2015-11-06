@@ -1,7 +1,9 @@
 import os
 import sys
 
+import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.feature_selection.base import SelectorMixin
 
 
 def get_random_seed(num_bytes=4):
@@ -35,3 +37,21 @@ class ModelImputer(BaseEstimator, TransformerMixin):
             y_imputed = self.model.predict(X_missing[:, X_columns])
             X[missing, self.y_column] = y_imputed
         return X
+
+
+class FeatureSelector(SelectorMixin, BaseEstimator):
+
+    def __init__(self, features=None):
+        self.features = features
+
+    def fit(self, X, y=None):
+        self.n_input_features = X.shape[1]
+        return self
+
+    def _get_support_mask(self):
+        if self.features is None:
+            mask = np.ones(self.n_input_features, dtype=bool)
+        else:
+            mask = np.zeros(self.n_input_features, dtype=bool)
+            mask[self.features] = True
+        return mask
