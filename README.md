@@ -1,6 +1,6 @@
 Submission to the
 ["Titanic: Machine Learning from Disaster"](https://www.kaggle.com/c/titanic)
-Kaggle competition. Current model achieves a score of 0.77512 in the
+Kaggle competition. Current model achieves a score of 0.77990 in the
 public leaderboard.
 
 Yasser Gonzalez
