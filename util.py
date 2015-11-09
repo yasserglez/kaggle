@@ -39,19 +39,19 @@ class ModelImputer(BaseEstimator, TransformerMixin):
         return X
 
 
-class FeatureSelector(SelectorMixin, BaseEstimator):
+class ColumnSelector(SelectorMixin, BaseEstimator):
 
-    def __init__(self, features=None):
-        self.features = features
+    def __init__(self, columns=None):
+        self.columns = columns
 
     def fit(self, X, y=None):
-        self.n_input_features = X.shape[1]
+        self.n_input_columns = X.shape[1]
         return self
 
     def _get_support_mask(self):
-        if self.features is None:
-            mask = np.ones(self.n_input_features, dtype=bool)
+        if self.columns is None:
+            mask = np.ones(self.n_input_columns, dtype=bool)
         else:
-            mask = np.zeros(self.n_input_features, dtype=bool)
-            mask[self.features] = True
+            mask = np.zeros(self.n_input_columns, dtype=bool)
+            mask[self.columns] = True
         return mask
