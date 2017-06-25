@@ -7,8 +7,36 @@ import numpy as np
 from numpy.random import RandomState
 import pandas as pd
 
-from .config import OUTPUT_DIR
+from .config import INPUT_DIR, OUTPUT_DIR
 from .input_data import OrdersInput, OrderProductsInput
+
+
+class _InputCSV(luigi.ExternalTask):
+    filename = None
+
+    @classmethod
+    def count(cls):
+        df = cls.read()
+        return df.shape[0]
+
+    @classmethod
+    def output(cls):
+        path = os.path.join(INPUT_DIR, cls.filename)
+        return luigi.LocalTarget(path)
+
+    @classmethod
+    def read(cls):
+        df = pd.read_csv(cls.output().path)
+        return df
+
+class Products(_InputCSV):
+    filename = 'products.csv'
+
+class Departments(_InputCSV):
+    filename = 'departments.csv'
+
+class Aisles(_InputCSV):
+    filename = 'aisles.csv'
 
 
 class _OrdersTask(luigi.Task):

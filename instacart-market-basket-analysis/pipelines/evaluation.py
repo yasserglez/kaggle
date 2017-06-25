@@ -18,7 +18,7 @@ class EvaluateModel(luigi.Task):
     def requires(self):
         return {
             'orders': TestOrders(),
-            'predictions': ModelPredictions(training_mode='evaluation', model_name=self.model_name),
+            'predictions': ModelPredictions(mode='evaluation', model_name=self.model_name),
         }
 
     def output(self):
@@ -41,9 +41,9 @@ class EvaluateModel(luigi.Task):
 
             # Correct target values
             y_true = set()
-            for product_order in target_order['products']:
-                if product_order['reordered']:
-                    y_true.add(product_order['product_id'])
+            for product in target_order['products']:
+                if product['reordered']:
+                    y_true.add(product['product_id'])
             if not y_true:
                 y_true.add('None')
 

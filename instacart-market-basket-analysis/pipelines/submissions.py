@@ -13,7 +13,7 @@ class Submission(luigi.Task):
 
     def requires(self):
         return {
-            'predictions': ModelPredictions(training_mode='submission', model_name=self.model_name),
+            'predictions': ModelPredictions(mode='submission', model_name=self.model_name),
         }
 
     def output(self):
@@ -39,6 +39,14 @@ class Submission1(Submission):
 
 class Submission2(Submission):
     model_name = 'frequent_products_0.9'
+
+
+class Submission3(Submission):
+    model_name = 'previous_order_reordered'
+
+
+class Submission4(Submission):
+    model_name = 'mlp_v1_3_relu_0.5_0.1'
 
 
 if __name__ == '__main__':

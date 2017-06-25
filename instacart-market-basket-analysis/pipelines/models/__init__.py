@@ -7,13 +7,16 @@ from ..config import MODELS_DIR
 from ..clean_data import CompleteOrders, SubmissionOrders, TrainingOrders, TestOrders
 
 
-class FitModel(luigi.Task):
+class _ModelTask(luigi.Task):
 
-    training_mode = luigi.ChoiceParameter(choices=['evaluation', 'submission'], default='submission')
+    mode = luigi.ChoiceParameter(choices=['evaluation', 'submission'], default='evaluation')
+
+
+class FitModel(_ModelTask):
 
     def requires(self):
         return {
-            'orders': TrainingOrders() if self.training_mode == 'evaluation' else CompleteOrders(),
+            'orders': TrainingOrders() if self.mode == 'evaluation' else CompleteOrders(),
         }
 
     @property
@@ -21,17 +24,15 @@ class FitModel(luigi.Task):
         raise NotImplementedError
 
     def output(self):
-        path = os.path.join(MODELS_DIR, self.training_mode, self.model_name)
+        path = os.path.join(MODELS_DIR, self.mode, self.model_name)
         return luigi.LocalTarget(path)
 
 
-class PredictModel(luigi.Task):
-
-    prediction_mode = luigi.ChoiceParameter(choices=['evaluation', 'submission'], default='submission')
+class PredictModel(_ModelTask):
 
     def requires(self):
         return {
-            'orders': TestOrders() if self.prediction_mode == 'evaluation' else SubmissionOrders(),
+            'orders': TestOrders() if self.mode == 'evaluation' else SubmissionOrders(),
         }
 
     @property
@@ -39,17 +40,18 @@ class PredictModel(luigi.Task):
         raise NotImplementedError
 
     def output(self):
-        path = os.path.join(MODELS_DIR, self.prediction_mode, '{}.json'.format(self.model_name))
+        basename = '{}_{}'.format(self.model_name, self.threshold) if self.threshold else self.model_name
+        path = os.path.join(MODELS_DIR, self.mode, '{}.json'.format(basename))
         return luigi.LocalTarget(path)
 
 
 class ModelPredictions(luigi.ExternalTask):
 
-    training_mode = luigi.ChoiceParameter(choices=['evaluation', 'submission'], default='submission')
     model_name = luigi.Parameter()
+    mode = luigi.ChoiceParameter(choices=['evaluation', 'submission'], default='evaluation')
 
     def output(self):
-        path = os.path.join(MODELS_DIR, self.training_mode, '{}.json'.format(self.model_name))
+        path = os.path.join(MODELS_DIR, self.mode, '{}.json'.format(self.model_name))
         return luigi.LocalTarget(path)
 
     def read(self):
