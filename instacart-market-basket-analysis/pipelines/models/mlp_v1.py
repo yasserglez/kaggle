@@ -26,7 +26,10 @@ class _MLPv1(object):
     @property
     def model_name(self):
         params = [self.num_hidden_layers, self.activation, self.dropout]
-        return 'mlp_v1_{}'.format('_'.join(str(p) for p in params))
+        model_name = 'mlp_v1_{}'.format('_'.join(str(p) for p in params))
+        if getattr(self, 'threshold', None) is not None:
+            model_name += '_{}'.format(self.threshold)
+        return model_name
 
     def _generate_user_features(self, orders):
         values = defaultdict(dict)
@@ -207,7 +210,6 @@ class FitMLPv1(_MLPv1, FitModel):
         training_data, validation_data = self._split_data(order_ids, product_ids, inputs, predictions, training_size=0.8)
         _, training_inputs, training_predictions = training_data
         _, validation_inputs, validation_predictions = validation_data
-
         del order_ids, product_ids, inputs, predictions
 
         model = self._build_model(training_inputs)

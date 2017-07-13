@@ -40,8 +40,7 @@ class PredictModel(_ModelTask):
         raise NotImplementedError
 
     def output(self):
-        basename = '{}_{}'.format(self.model_name, self.threshold) if self.threshold else self.model_name
-        path = os.path.join(MODELS_DIR, self.mode, '{}.json'.format(basename))
+        path = os.path.join(MODELS_DIR, self.mode, '{}.json'.format(self.model_name))
         return luigi.LocalTarget(path)
 
 

@@ -35,7 +35,7 @@ the reordered products in the last order are considered as positive examples,
 and all the other previously ordered products as negative examples.
 
 Predictions are generated only for previously purchased products and the
-score threshold for positive or negative predictions is constant for all users
+score threshold for positive or negative predictions is the same for all users
 (optimized on the validation set).
 
 * User features:
@@ -53,6 +53,6 @@ score threshold for positive or negative predictions is constant for all users
 
 Next steps:
 
-* Expand feature engineering.
-* Estimate a different threshold specific for each user.
+* Extend feature engineering.
 * Make use of previous orders to generate the training samples, not just the last order for each user.
+* Estimate a specific threshold for each user (or predict the number of reordered products directly).

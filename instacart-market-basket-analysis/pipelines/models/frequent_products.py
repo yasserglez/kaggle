@@ -46,12 +46,5 @@ class PredictFrequentProducts(PredictModel):
             ujson.dump(predictions, fd)
 
 
-class OptimizeFrequentProducts(luigi.WrapperTask):
-
-    def requires(self):
-        for p in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99]:
-            yield PredictFrequentProducts(mode='evaluation', reorder_percentile=p)
-
-
 if __name__ == '__main__':
     luigi.run(local_scheduler=True)
