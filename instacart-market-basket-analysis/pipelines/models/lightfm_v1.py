@@ -53,7 +53,6 @@ class _LightFM(object):
         # if training:
         #     # Create new "users" from prior orders
         #     for k in range(1, len(user_data['prior_orders'])):
-        #         # Take a sample due to memory limitations
         #         last_order = user_data['prior_orders'][k]
         #         prior_orders = user_data['prior_orders'][:k]
         #         yield self._generate_row(last_order, prior_orders)
