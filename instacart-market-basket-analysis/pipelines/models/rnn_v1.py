@@ -195,7 +195,7 @@ class FitRNNv1(_RNNv1, FitModel):
                                     validation_steps=validation_steps_per_epoch,
                                     epochs=1000, verbose=1, callbacks=callbacks)
 
-                # Best model saved by the ModelCheckpoint callback
+                # Best model saved using the ModelCheckpoint callback
                 # model.save(self.output().path)
 
 
