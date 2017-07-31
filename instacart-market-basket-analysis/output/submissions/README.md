@@ -51,7 +51,7 @@ score threshold for positive or negative predictions is the same for all users
   * User product recency: number of days since the user last ordered the product.
   * User product frequency: how often does the user reorder the product?
 
-Next steps:
+Notes:
 
 * Extend feature engineering.
 * Make use of previous orders to generate the training samples, not just the last order for each user.
