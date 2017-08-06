@@ -1,13 +1,17 @@
 import os
 import sys
 import pprint
+import subprocess
 import tempfile
+from collections import defaultdict
+from contextlib import contextmanager
 
 import luigi
 import ujson
 import numpy as np
 from numpy.random import RandomState
 from sklearn.utils.class_weight import compute_class_weight
+from sklearn.utils import shuffle
 import pandas as pd
 import tensorflow as tf
 from keras import models
@@ -20,8 +24,6 @@ from hyperopt.pyll.stochastic import sample
 
 from ..models import FitModel, PredictModel
 from ..clean_data import Products
-
-from .utils import ExamplesGenerator, hidden_layer_units
 
 
 # class ProductEmbedding(layers.Embedding):
@@ -46,7 +48,7 @@ from .utils import ExamplesGenerator, hidden_layer_units
 #         return out
 
 
-class _RNNv3(ExamplesGenerator):
+class _RNNv3(object):
 
     max_days = luigi.IntParameter(default=91)
     max_products_per_day = luigi.IntParameter(default=15)
@@ -58,7 +60,7 @@ class _RNNv3(ExamplesGenerator):
     dropout = luigi.FloatParameter(default=0.5)
 
     random_seed = luigi.IntParameter(default=3996193, significant=False)
-    global_orders_ratio = luigi.FloatParameter(default=1.0, significant=False)
+    global_orders_ratio = luigi.FloatParameter(default=0.001, significant=False)
     validation_orders_ratio = luigi.FloatParameter(default=0.1, significant=False)
     batch_size = luigi.IntParameter(default=1024, significant=False)
     epochs = luigi.IntParameter(default=1000, significant=False)
@@ -79,6 +81,17 @@ class _RNNv3(ExamplesGenerator):
         ]
         model_name = 'rnn_v3_{}'.format('_'.join(str(p).lower() for p in params))
         return model_name
+
+    @staticmethod
+    def _count_lines(file_path):
+        p = subprocess.Popen(['wc', '-l', file_path], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        return int(p.communicate()[0].partition(b' ')[0])
+
+    @contextmanager
+    def _open_shuffled(self, file_path):
+        with tempfile.NamedTemporaryFile(delete=True) as f:
+            subprocess.call(['shuf', file_path, '-o', f.name])
+            yield open(f.name)
 
     def _generate_examples(self, last_order, prior_orders):
         # Collect the sequence of products that was ordered each day for the last max_days days
@@ -109,6 +122,100 @@ class _RNNv3(ExamplesGenerator):
         # Return the negative examples
         for product_id in (ordered_within_max_days - positive_examples):
             yield last_order['order_id'], product_id, orders, 0.0
+
+    def _generate_user_examples(self, user_data, max_prior_orders):
+        yield from self._generate_examples(user_data['last_order'], user_data['prior_orders'])
+        max_prior_orders -= 1
+        if max_prior_orders > 0:
+            for k in range(len(user_data['prior_orders']) - 1, 0, -1):
+                last_order = user_data['prior_orders'][k]
+                prior_orders = user_data['prior_orders'][:k]
+                yield from self._generate_examples(last_order, prior_orders)
+                max_prior_orders -= 1
+                if max_prior_orders == 0:
+                    break
+
+    def _load_data(self, orders_path):
+        order_ids = []
+        inputs = defaultdict(list)
+        predictions = []
+
+        def add_example(order_id, product, orders, prediction):
+            order_ids.append(order_id)
+            inputs['product'].append(product)
+            inputs['orders'].append(orders)
+            predictions.append(prediction)
+
+        with open(orders_path) as orders_file:
+            for line in orders_file:
+                user_data = ujson.loads(line)
+                for order_id, product, orders, prediction in self._generate_user_examples(user_data, max_prior_orders=1):
+                    add_example(order_id, product, orders, prediction)
+
+        # Build the numpy arrays
+        inputs['product'] = np.array(inputs['product'])
+        inputs['orders'] = np.array(inputs['orders'])
+        predictions = np.array(predictions)
+        inputs['product'], inputs['orders'], predictions = \
+            shuffle(inputs['product'], inputs['orders'], predictions, random_state=self.random)
+
+        return order_ids, inputs, predictions
+
+    def _create_data_generator(self, orders_path, max_prior_orders, batch_size):
+        # Count the number of training examples
+        num_examples = 0
+        with open(orders_path) as orders_file:
+            for line in orders_file:
+                user_data = ujson.loads(line)
+                for _ in self._generate_user_examples(user_data, max_prior_orders):
+                    num_examples += 1
+
+        batch_sizes = [len(a) for a in np.array_split(range(num_examples), num_examples / batch_size)]
+        steps_per_epoch = len(batch_sizes)
+
+        def generator():
+            while True:
+                current_step = 0
+                product_inputs, orders_inputs, predictions = [], [], []
+                with self._open_shuffled(orders_path) as orders_file:
+                    for line in orders_file:
+                        user_data = ujson.loads(line)
+                        # Generate examples from this user's data
+                        for order_id, product, orders, prediction in self._generate_user_examples(user_data, max_prior_orders):
+                            product_inputs.append(product)
+                            orders_inputs.append(orders)
+                            predictions.append(prediction)
+                        # Return inputs and predictions if we have enough examples
+                        while len(predictions) >= 10 * batch_sizes[current_step]:
+                            product_inputs, orders_inputs, predictions = \
+                                shuffle(product_inputs, orders_inputs, predictions, random_state=self.random)
+                            b = batch_sizes[current_step]
+                            inputs = {'product': np.array(product_inputs[:b]), 'orders': np.array(orders_inputs[:b])}
+                            yield inputs, np.array(predictions[:b])
+                            del product_inputs[:b]
+                            del orders_inputs[:b]
+                            del predictions[:b]
+                            current_step += 1
+                # Flush the rest of the examples
+                while current_step < steps_per_epoch:
+                    b = batch_sizes[current_step]
+                    inputs = {'product': np.array(product_inputs[:b]), 'orders': np.array(orders_inputs[:b])}
+                    yield inputs, np.array(predictions[:b])
+                    del product_inputs[:b]
+                    del orders_inputs[:b]
+                    del predictions[:b]
+                    current_step += 1
+                assert current_step == steps_per_epoch
+                assert len(product_inputs) == 0
+                assert len(orders_inputs) == 0
+                assert len(predictions) == 0
+
+        return generator(), steps_per_epoch
+
+    def _hidden_layer_units(self, num_layers, from_dim, to_dim):
+        units = np.linspace(from_dim, to_dim, num_layers + 2)[1:-1]
+        units = np.round(units, 0).astype(np.int)
+        return units
 
     def _build_model(self):
         # Inputs:
@@ -151,7 +258,7 @@ class _RNNv3(ExamplesGenerator):
         lstm = layers.Bidirectional(layer, merge_mode='concat', name='lstm_{}'.format(self.lstm_layers))(lstm)
 
         hidden = layers.Dropout(rate=self.dropout)(lstm)
-        layer_units = hidden_layer_units(self.hidden_layers, 2 * self.lstm_units, 1)
+        layer_units = self._hidden_layer_units(self.hidden_layers, 2 * self.lstm_units, 1)
         for k, units in enumerate(layer_units):
             hidden_name = 'hidden_{}'.format(k + 1)
             hidden = layers.Dense(units, activation='relu', name=hidden_name)(hidden)
@@ -268,7 +375,7 @@ class PredictRNNv3ReorderSizeKnown(_PredictRNNv3):
         reorder_size = self._determine_reorder_size()
 
         predictions = {}
-        for order_id in order_ids:
+        for order_id in set(order_ids):
             predictions[order_id] = []
             df = scores[scores.order_id == order_id].nlargest(reorder_size[order_id], 'score')
             for row in df.itertuples(index=False):

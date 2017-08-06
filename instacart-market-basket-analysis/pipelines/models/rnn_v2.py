@@ -352,7 +352,7 @@ class PredictRNNv2ReorderSizeKnown(_PredictRNNv2):
         reorder_size = self._determine_reorder_size()
 
         predictions = {}
-        for order_id in order_ids:
+        for order_id in set(order_ids):
             predictions[order_id] = []
             df = scores[scores.order_id == order_id].nlargest(reorder_size[order_id], 'score')
             for row in df.itertuples(index=False):
@@ -458,7 +458,7 @@ class PredictRNNv2Threshold(_PredictRNNv2):
         scores = scores[scores.score > self.threshold].sort_values('score', ascending=False)
 
         predictions = {}
-        for order_id in order_ids:
+        for order_id in set(order_ids):
             predictions[order_id] = []
         for row in scores.itertuples(index=False):
             # ujson fails when it tries to serialize the numpy int values

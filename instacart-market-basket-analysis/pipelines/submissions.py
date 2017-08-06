@@ -49,5 +49,9 @@ class Submission4(Submission):
     model_name = 'mlp_v1_3_relu_0.5_0.1'
 
 
+class Submission5(Submission):
+    model_name = 'mlp_v2_5_91_5_3_0.5_threshold_0.173'
+
+
 if __name__ == '__main__':
     luigi.run(local_scheduler=True)
