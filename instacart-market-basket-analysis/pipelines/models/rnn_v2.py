@@ -21,7 +21,7 @@ from ..clean_data import Products
 from ..config import OUTPUT_DIR
 
 
-class _RNNv2(object):
+class RNNv2(object):
 
     max_prior_orders = luigi.IntParameter(default=3)
     max_days = luigi.IntParameter(default=31)
@@ -250,7 +250,7 @@ class _RNNv2(object):
         return model
 
 
-class FitRNNv2(_RNNv2, FitModel):
+class FitRNNv2(RNNv2, FitModel):
 
     def run(self):
         self.random = RandomState(self.random_seed)
@@ -292,7 +292,7 @@ class FitRNNv2(_RNNv2, FitModel):
         training_fd.close()
 
 
-class _PredictRNNv2(_RNNv2, PredictModel):
+class _PredictRNNv2(RNNv2, PredictModel):
 
     def requires(self):
         req = super().requires()

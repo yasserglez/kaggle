@@ -18,7 +18,7 @@ from ..models import FitModel, PredictModel
 from ..clean_data import Products
 
 
-class _LightFM(object):
+class LightFMv1(object):
 
     loss = luigi.ChoiceParameter(choices=['logistic', 'bpr', 'warp'], default='logistic')
     no_components = luigi.IntParameter(default=10)
@@ -91,13 +91,13 @@ class _LightFM(object):
         return order_ids, user_features_matrix, interactions_matrix
 
 
-class FitLightFMv1(_LightFM, FitModel):
+class FitLightFMv1(LightFMv1, FitModel):
 
     def _fit_ranking_model(self, user_features, interactions):
-        model = LightFM(no_components=self.no_components,
-                        loss=self.loss,
-                        max_sampled=self.max_sampled,
-                        random_state=self.random)
+        model = LightFMv1(no_components=self.no_components,
+                          loss=self.loss,
+                          max_sampled=self.max_sampled,
+                          random_state=self.random)
         model.fit(interactions, user_features=user_features, epochs=self.epochs,
                   num_threads=self.num_threads, verbose=True)
         return model
@@ -182,7 +182,7 @@ class FitLightFMv1(_LightFM, FitModel):
                     zip.write(threshold_file.name, 'threshold_model')
 
 
-class PredictLightFMv1(_LightFM, PredictModel):
+class PredictLightFMv1(LightFMv1, PredictModel):
 
     def requires(self):
         req = super().requires()

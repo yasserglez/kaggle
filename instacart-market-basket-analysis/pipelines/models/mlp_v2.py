@@ -25,7 +25,7 @@ from ..models import FitModel, PredictModel
 from .f1_maximization import maximize_expected_f1
 
 
-class _MLPv2(object):
+class MLPv2(object):
 
     num_orders_per_user = luigi.IntParameter(default=5)
     product_history = luigi.IntParameter(default=91)
@@ -243,7 +243,7 @@ class _MLPv2(object):
         return model
 
 
-class FitMLPv2(_MLPv2, FitModel):
+class FitMLPv2(MLPv2, FitModel):
 
     def run(self):
         self.random = RandomState(self.random_seed)
@@ -283,7 +283,7 @@ class FitMLPv2(_MLPv2, FitModel):
         training_fd.close()
 
 
-class _PredictMLPv2(_MLPv2, PredictModel):
+class _PredictMLPv2(MLPv2, PredictModel):
 
     def requires(self):
         req = super().requires()
@@ -533,12 +533,12 @@ class OptimizeMLPv2ThresholdVariable(luigi.Task):
                 global_orders_ratio=0.25)
 
 
-class PredictMLPv2EMU(_PredictMLPv2):
+class PredictMLPv2ExpectedF1(_PredictMLPv2):
 
     @property
     def model_name(self):
         model_name = super().model_name
-        model_name += '_emu'
+        model_name += '_expected_f1'
         return model_name
 
     def _determine_reorder_size(self, scores):

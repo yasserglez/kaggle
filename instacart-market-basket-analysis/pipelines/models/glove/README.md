@@ -1,0 +1,1 @@
+Download `glove.6B.zip` from https://nlp.stanford.edu/projects/glove/ and unzip it here.

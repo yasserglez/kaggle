@@ -13,7 +13,7 @@ from ..models import FitModel, PredictModel
 from ..clean_data import Products
 
 
-class _LightFM(object):
+class LightFMv2(object):
 
     loss = luigi.ChoiceParameter(choices=['logistic', 'bpr', 'warp'], default='logistic')
     no_components = luigi.IntParameter(default=100)
@@ -91,7 +91,7 @@ class _LightFM(object):
         return order_ids, user_features_matrix, interactions_matrix
 
 
-class FitLightFMv2(_LightFM, FitModel):
+class FitLightFMv2(LightFMv2, FitModel):
 
     def run(self):
         self.random = RandomState(self.random_seed)
@@ -109,7 +109,7 @@ class FitLightFMv2(_LightFM, FitModel):
         joblib.dump(model, self.output().path)
 
 
-class PredictLightFMv2ReorderSizeKnown(_LightFM, PredictModel):
+class PredictLightFMv2ReorderSizeKnown(LightFMv2, PredictModel):
 
     def requires(self):
         req = super().requires()

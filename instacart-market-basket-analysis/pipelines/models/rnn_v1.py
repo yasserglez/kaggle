@@ -28,7 +28,7 @@ def hinge_loss(y_true, y_pred, margin=1.0):
     return tf.reduce_mean(losses)
 
 
-class _RNNv1(object):
+class RNNv1(object):
 
     embedding_dim = luigi.IntParameter(default=10)
     max_products_per_user = luigi.IntParameter(default=100)
@@ -134,7 +134,7 @@ class _RNNv1(object):
         return generator(), len(batch_sizes)
 
 
-class FitRNNv1(_RNNv1, FitModel):
+class FitRNNv1(RNNv1, FitModel):
 
     def _build_model(self):
         product = Input(shape=(1, ))
@@ -199,7 +199,7 @@ class FitRNNv1(_RNNv1, FitModel):
                 # model.save(self.output().path)
 
 
-class PredictRNNv1(_RNNv1, PredictModel):
+class PredictRNNv1(RNNv1, PredictModel):
 
     def requires(self):
         req = super().requires()

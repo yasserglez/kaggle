@@ -15,7 +15,7 @@ from ..models import FitModel, PredictModel
 from ..clean_data import Aisles, Products
 
 
-class _MLPv1(object):
+class MLPv1(object):
 
     random_seed = luigi.IntParameter(default=3996193)
 
@@ -201,7 +201,7 @@ class _MLPv1(object):
         return order_ids, product_ids, inputs, predictions
 
 
-class FitMLPv1(_MLPv1, FitModel):
+class FitMLPv1(MLPv1, FitModel):
 
     def run(self):
         self.random = RandomState(self.random_seed)
@@ -279,7 +279,7 @@ class FitMLPv1(_MLPv1, FitModel):
         return model
 
 
-class PredictMLPv1(_MLPv1, PredictModel):
+class PredictMLPv1(MLPv1, PredictModel):
 
     threshold = luigi.FloatParameter(default=0.1)
 

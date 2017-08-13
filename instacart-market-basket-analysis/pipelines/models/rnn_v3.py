@@ -48,7 +48,7 @@ from ..clean_data import Products
 #         return out
 
 
-class _RNNv3(object):
+class RNNv3(object):
 
     max_days = luigi.IntParameter(default=91)
     max_products_per_day = luigi.IntParameter(default=15)
@@ -272,7 +272,7 @@ class _RNNv3(object):
         return model
 
 
-class FitRNNv3(_RNNv3, FitModel):
+class FitRNNv3(RNNv3, FitModel):
 
     def run(self):
         self.random = RandomState(self.random_seed)
@@ -315,7 +315,7 @@ class FitRNNv3(_RNNv3, FitModel):
         training_fd.close()
 
 
-class _PredictRNNv3(_RNNv3, PredictModel):
+class _PredictRNNv3(RNNv3, PredictModel):
 
     def requires(self):
         req = super().requires()
