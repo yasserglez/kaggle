@@ -318,7 +318,7 @@ class Model(nn.Module):
         attention_size = attention.size()
         attention = self.attention(attention.view(-1, 1)).view(attention_size)
 
-        # Applying attention to the product history (after attention).
+        # Applying attention to the product history.
         attention = attention.unsqueeze(2).expand(product_history_vectors.size())
         product_history_vectors = product_history_vectors * attention
 
