@@ -37,16 +37,16 @@ def main():
     targets = to_categorical(targets, 10)
     callbacks = [
         EarlyStopping(monitor='val_acc', patience=3),
-        ModelCheckpoint('keras_cnn.h5', save_best_only=True, save_weights_only=True),
+        ModelCheckpoint('keras_convnet', save_best_only=True, save_weights_only=True),
     ]
     model.fit(train_images, targets, batch_size=64, epochs=100, validation_split=0.1, callbacks=callbacks)
 
-    model.load_weights('keras_cnn.h5')
+    model.load_weights('keras_convnet')
     test_images = load_test_data()
     test_images = test_images.reshape(-1, 28, 28, 1)
     predictions = model.predict(test_images)
     labels = np.argmax(predictions, 1)
-    save_predictions(labels, 'keras_cnn.csv')
+    save_predictions(labels, 'keras_convnet.csv')
 
 
 if __name__ == '__main__':
