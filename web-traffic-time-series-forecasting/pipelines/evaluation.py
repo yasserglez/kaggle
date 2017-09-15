@@ -25,7 +25,7 @@ class ModelEvaluation(luigi.Task):
 
     def requires(self):
         return {
-            'data': InputData(stage=2),
+            'data': InputData(stage=3),
             'predictions': ModelPredictions(data_dir=self.data_dir, model_name=self.model_name),
         }
 
