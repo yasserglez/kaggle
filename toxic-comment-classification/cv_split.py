@@ -1,7 +1,6 @@
 import os
 import argparse
 
-import pandas as pd
 from numpy.random import RandomState
 
 import common
@@ -9,9 +8,8 @@ import common
 
 def cv_split(random_seed):
     random_state = RandomState(random_seed)
-    data = pd.read_csv(os.path.join(common.DATA_DIR, 'submission/train.csv'))
+    data = common.load_data('submission', None, 'train.csv')
     train_data, test_data = common.split_data(data, test_size=0.2, random_state=random_state)
-
     cv_dir = os.path.join(common.DATA_DIR, 'cross_validation', str(random_seed))
     if not os.path.isdir(cv_dir):
         os.makedirs(cv_dir)

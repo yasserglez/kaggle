@@ -5,16 +5,17 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torchtext.data import Iterator
 
 import common
+import base
 
 
-class LSTM(common.BaseModule):
+class LSTM(base.BaseModule):
 
-    def __init__(self, vocab_size, embedding_size, lstm_size,
-                 dense_layers, dense_nonlinearily, dropout):
+    def __init__(self, vocab, lstm_size, dense_layers, dense_nonlinearily, dense_dropout):
 
-        super().__init__(vocab_size, embedding_size)
+        super().__init__(vocab)
 
         # TODO: Train the initial hidden state
+        embedding_size = vocab.vectors.shape[1]
         self.lstm = nn.LSTM(embedding_size, lstm_size, bidirectional=True, batch_first=True)
         for name, param in self.lstm.named_parameters():
             if name.startswith('weight_ih_'):
@@ -24,15 +25,15 @@ class LSTM(common.BaseModule):
             elif name.startswith('bias_ih_'):
                 nn.init.constant(param, 0.0)
 
-        self.dense = common.Dense(
-            2 * lstm_size, 6,
+        self.dense = base.Dense(
+            2 * lstm_size, len(common.LABELS),
             output_nonlinearity='sigmoid',
             hidden_layers=dense_layers,
             hidden_nonlinearity=dense_nonlinearily,
-            dropout=dropout)
+            dropout=dense_dropout)
 
     def forward(self, text, text_lengths):
-        vectors = self.token_embedding(text)
+        vectors = self.embedding(text)
 
         packed_vectors = pack_padded_sequence(vectors, text_lengths.tolist(), batch_first=True)
         packed_lstm_output, _ = self.lstm(packed_vectors)
@@ -45,14 +46,15 @@ class LSTM(common.BaseModule):
         return output
 
 
-class RNN(common.BaseModel):
+class RNN(base.BaseModel):
 
-    def build_training_iterators(self):
+    def build_training_iterators(self, preprocessed_data):
         df = common.load_data(self.mode, self.random_seed, 'train.csv')
+        df['text'] = df['id'].map(preprocessed_data)
         train_df, val_df = common.split_data(df, test_size=0.1, random_state=self.random_state)
 
-        train_dataset = common.ToxicCommentDataset(train_df, self.text_field)
-        val_dataset = common.ToxicCommentDataset(val_df, self.text_field)
+        train_dataset = base.CommentsDataset(train_df, self.fields)
+        val_dataset = base.CommentsDataset(val_df, self.fields)
 
         train_iter, val_iter = Iterator.splits(
             (train_dataset, val_dataset), batch_size=self.params['batch_size'],
@@ -60,9 +62,10 @@ class RNN(common.BaseModel):
 
         return train_iter, val_iter
 
-    def build_prediction_iterator(self):
+    def build_prediction_iterator(self, preprocessed_data):
         df = common.load_data(self.mode, self.random_seed, 'test.csv')
-        dataset = common.ToxicCommentDataset(df, self.text_field)
+        df['text'] = df['id'].map(preprocessed_data)
+        dataset = base.CommentsDataset(df, self.fields)
 
         # Reorder the examples (required by pack_padded_sequence)
         sort_indices = sorted(range(len(dataset)), key=lambda i: -len(dataset[i].text))
@@ -76,36 +79,13 @@ class RNN(common.BaseModel):
 
     def build_model(self):
         model = LSTM(
-            len(self.vocab),
-            embedding_size=self.params['embedding_size'],
+            vocab=self.vocab,
             lstm_size=self.params['lstm_size'],
             dense_layers=self.params['dense_layers'],
             dense_nonlinearily='relu',
-            dropout=self.params['dropout'])
+            dense_dropout=self.params['dense_dropout'])
         return model
 
     def update_parameters(self, model, optimizer, loss):
         # TODO: Implement gradient clipping
         optimizer.step()
-
-
-if __name__ == '__main__':
-    params = {
-        'token': 'char',
-        'lower': False,
-        'min_freq': 11,
-        'max_len': 1000,
-        'batch_size': 32,
-        'learning_rate': 0.001,
-        'max_epochs': 100,
-        'patience': 10,
-        'embedding_size': 16,
-        'lstm_size': 256,
-        'dense_layers': 1,
-        'dropout': 0.1,
-        'reg_lambda': 0.0,
-        'reg_k': 1,
-    }
-    for mode in ['cross_validation', 'submission']:
-        rnn = RNN(mode, params, random_seed=1584965)
-        rnn.main()
