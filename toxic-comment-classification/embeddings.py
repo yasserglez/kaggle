@@ -1,4 +1,5 @@
 import os
+import sys
 import pprint
 import logging
 import tempfile
@@ -42,6 +43,8 @@ def load(preprocessed_data, params):
         return load_fasttext(preprocessed_data, params)
     elif params['pretrain_model'] == 'pmi':
         return load_pmi(preprocessed_data, params)
+    elif params['pretrain_model'] == 'lm':
+        return LMVectors()
 
 
 def load_fasttext(preprocessed_data, params):
@@ -217,6 +220,29 @@ class PMIVectors(Vectors):
             self.itos[i] = word
         self.vectors = vectors
         self.dim = self.vectors.shape[1]
+
+    def __getitem__(self, word):
+        if word in self.stoi:
+            vector = self.vectors[self.stoi[word]]
+        else:
+            vector = np.zeros_like(self.vectors[0])
+        return torch.from_numpy(vector)
+
+
+class LMVectors(Vectors):
+
+    def __init__(self):
+        checkout_dir = os.path.abspath(os.path.join(common.DATA_DIR, '../awd-lstm-lm'))
+        sys.path.insert(0, checkout_dir)
+
+        dictionary = joblib.load(os.path.join(checkout_dir, 'dictionary.pickle'))
+        self.itos = dictionary.idx2word
+        self.stoi = dictionary.word2idx
+        model = torch.load(os.path.join(checkout_dir, 'model.pickle'))
+        self.vectors = model.encoder.weight.data.cpu().numpy()
+        self.dim = self.vectors.shape[1]
+
+        sys.path.pop(0)
 
     def __getitem__(self, word):
         if word in self.stoi:

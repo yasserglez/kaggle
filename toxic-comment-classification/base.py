@@ -90,6 +90,14 @@ class BaseModel(object):
                     'pretrain_epochs': 50,
                 }
                 vectors.append(embeddings.load(preprocessed_data, pmi_params))
+            if self.params['vectors_lm']:
+                lm_params = {
+                    'embedding_size': self.params['vectors_lm'],
+                    'pretrain_model': 'lm',
+                    'pretrain_lr': 0.001,
+                    'pretrain_epochs': 50,
+                }
+                vectors.append(embeddings.load(preprocessed_data, lm_params))
 
             train_df = common.load_data('submission', None, 'train.csv')
             train_df['text'] = train_df['id'].map(preprocessed_data)
