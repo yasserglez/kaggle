@@ -14,6 +14,7 @@ import torch
 from torch import nn, optim
 from torch.nn import functional as F
 from torchtext.data import Dataset, Field, Example
+from torchtext.vocab import Vectors, pretrained_aliases
 
 import common
 import preprocessing
@@ -58,22 +59,45 @@ class BaseModel(object):
             np.random.seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
             torch.manual_seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
 
-            text_field = Field(batch_first=True, include_lengths=True, pad_token='<PAD>', unk_token='<UNK>')
-            labels_field = Field(sequential=False, use_vocab=False, tensor_type=torch.FloatTensor)
-            self.fields = [('text', text_field), ('labels', labels_field)]
-
             preprocessed_data = preprocessing.load(self.params)
-            train_df = common.load_data('submission', None, 'train.csv')
-            train_df['text'] = train_df['id'].map(preprocessed_data)
-            train_dataset = CommentsDataset(train_df, self.fields)
-            test_df = common.load_data('submission', None, 'test.csv')
-            test_df['text'] = test_df['id'].map(preprocessed_data)
-            test_dataset = CommentsDataset(test_df, self.fields)
-            text_field.build_vocab(train_dataset, test_dataset, vectors=self.params['vectors'])
-            self.vocab = text_field.vocab
+            self.fields, self.vocab = self.build_fields_and_vocab(preprocessed_data)
 
             self.train(preprocessed_data)
             self.predict(preprocessed_data)
+
+    def build_fields_and_vocab(self, preprocessed_data):
+        text_field = Field(pad_token='<PAD>', unk_token=None, batch_first=True, include_lengths=True)
+        labels_field = Field(sequential=False, use_vocab=False, tensor_type=torch.FloatTensor)
+        fields = [('text', text_field), ('labels', labels_field)]
+
+        # Build the vocabulary
+        train_df = common.load_data('submission', None, 'train.csv')
+        train_df['text'] = train_df['id'].map(preprocessed_data)
+        train_dataset = CommentsDataset(train_df, fields)
+        test_df = common.load_data('submission', None, 'test.csv')
+        test_df['text'] = test_df['id'].map(preprocessed_data)
+        test_dataset = CommentsDataset(test_df, fields)
+        text_field.build_vocab(train_dataset, test_dataset)
+        vocab = text_field.vocab
+        assert vocab.stoi['<PAD>'] == 0
+
+        # Fill in missing words with the mean of the existing vectors
+        vectors = pretrained_aliases[self.params['vectors']]()
+        vectors_sum = np.zeros((vectors.dim, ))
+        vectors_count = 0
+        for token in vocab.itos:
+            if token in vectors.stoi:
+                vectors_sum += vectors[token].numpy()
+                vectors_count += 1
+        mean_vector = torch.FloatTensor(vectors_sum / vectors_count).unsqueeze(0)
+
+        def getitem(self, token):
+            return self.vectors[self.stoi[token]] if token in self.stoi else mean_vector
+        Vectors.__getitem__ = getitem
+
+        vocab.load_vectors(vectors)
+
+        return fields, vocab
 
     def train(self, preprocessed_data):
         train_iter, val_iter = self.build_training_iterators(preprocessed_data)
@@ -195,10 +219,9 @@ class BaseModule(nn.Module):
     def __init__(self, vocab):
         super().__init__()
         vocab_size, embedding_size = vocab.vectors.shape
-        self.embedding = nn.Embedding(vocab_size, embedding_size)
+        self.embedding = nn.Embedding(vocab_size, embedding_size, padding_idx=0)
         self.embedding.weight.data.copy_(vocab.vectors)
-        for word in ['<PAD>', '<UNK>']:
-            self.embedding.weight.data[vocab.stoi[word], :] = 0
+        self.embedding.weight.data[vocab.stoi['<PAD>'], :] = 0
         self.embedding.weight.requires_grad = False
 
 
