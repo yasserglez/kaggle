@@ -2,7 +2,6 @@ import os
 import glob
 from collections import OrderedDict
 
-import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
@@ -25,12 +24,10 @@ def main():
 
                 model_results = OrderedDict()
                 model_results['auc'] = roc_auc_score(target, model_output, average='macro')
-
                 for param in sorted(os.path.basename(model_file)[:-4].split('_')):
                     k, v = param.split('=')
                     k = k.replace('-', '_')
                     model_results[k] = v
-
                 results.append(model_results)
 
             if results:

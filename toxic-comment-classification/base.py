@@ -2,6 +2,7 @@ import os
 import sys
 import pprint
 import logging
+import itertools
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -16,7 +17,6 @@ from torchtext.data import Dataset, Field, Example
 
 import common
 import preprocessing
-import embeddings
 
 
 logger = logging.getLogger(__name__)
@@ -37,13 +37,6 @@ class CommentsDataset(Dataset):
 
 
 class BaseModel(object):
-    """Base class of all the implemented models.
-
-    Parameters:
-        lr: learning rate.
-        max_epochs: maximum number of epochs.
-        patience: number of epochs with no improvement after which training will be stopped.
-    """
 
     def __init__(self, mode, name, params, random_seed):
         self.mode = mode
@@ -70,42 +63,13 @@ class BaseModel(object):
             self.fields = [('text', text_field), ('labels', labels_field)]
 
             preprocessed_data = preprocessing.load(self.params)
-
-            vectors = []
-            if self.params['vectors_glove']:
-                vectors.append('glove.42B.300d')
-            if self.params['vectors_fasttext']:
-                fasttext_params = {
-                    'embedding_size': self.params['vectors_fasttext'],
-                    'pretrain_model': 'cbow',
-                    'pretrain_lr': 0.05,
-                    'pretrain_epochs': 50,
-                }
-                vectors.append(embeddings.load(preprocessed_data, fasttext_params))
-            if self.params['vectors_pmi']:
-                pmi_params = {
-                    'embedding_size': self.params['vectors_pmi'],
-                    'pretrain_model': 'pmi',
-                    'pretrain_lr': 0.001,
-                    'pretrain_epochs': 50,
-                }
-                vectors.append(embeddings.load(preprocessed_data, pmi_params))
-            if self.params['vectors_lm']:
-                lm_params = {
-                    'embedding_size': self.params['vectors_lm'],
-                    'pretrain_model': 'lm',
-                    'pretrain_lr': 0.001,
-                    'pretrain_epochs': 50,
-                }
-                vectors.append(embeddings.load(preprocessed_data, lm_params))
-
             train_df = common.load_data('submission', None, 'train.csv')
             train_df['text'] = train_df['id'].map(preprocessed_data)
             train_dataset = CommentsDataset(train_df, self.fields)
             test_df = common.load_data('submission', None, 'test.csv')
             test_df['text'] = test_df['id'].map(preprocessed_data)
             test_dataset = CommentsDataset(test_df, self.fields)
-            text_field.build_vocab(train_dataset, test_dataset, vectors=vectors)
+            text_field.build_vocab(train_dataset, test_dataset, vectors=self.params['vectors'])
             self.vocab = text_field.vocab
 
             self.train(preprocessed_data)
@@ -125,7 +89,7 @@ class BaseModel(object):
         patience_count = 0
         best_val_auc = 0
 
-        for epoch in range(1, self.params['max_epochs'] + 1):
+        for epoch in itertools.count(start=1):
             t_start = datetime.now()
             loss = self.train_model(model, optimizer, train_iter)
             val_auc = self.evaluate_model(model, val_iter)
@@ -145,7 +109,7 @@ class BaseModel(object):
                     logger.info('Stopped - best_val_auc: {:.6g}'.format(best_val_auc))
                     break
 
-            if epoch == self.params['max_epochs']:
+            if epoch == 1000:
                 logger.warning('Training reached the maximum number of epochs')
 
     def predict(self, preprocessed_data):
