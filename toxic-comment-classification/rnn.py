@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.autograd import Variable
+from torch.nn.utils.clip_grad import clip_grad_norm
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torchtext.data import Iterator
 
@@ -9,28 +10,31 @@ import common
 import base
 
 
-class LSTM(base.BaseModule):
+class RNNModule(base.BaseModule):
 
-    def __init__(self, vocab, lstm_size, dense_layers, dense_nonlinearily, dense_dropout):
-
+    def __init__(self, vocab, rnn_cell, rnn_size, rnn_layers, dense_layers, dense_nonlinearily, dense_dropout):
         super().__init__(vocab)
 
-        lstm_layers = 1
-        h0 = torch.zeros(2 * lstm_layers, 1, lstm_size)
-        self.lstm_h0 = nn.Parameter(h0, requires_grad=True)
+        h0 = torch.zeros(2 * rnn_layers, 1, rnn_size)
+        self.rnn_h0 = nn.Parameter(h0, requires_grad=True)
 
-        embedding_size = vocab.vectors.shape[1]
-        self.lstm = nn.LSTM(embedding_size, lstm_size, lstm_layers, bidirectional=True, batch_first=True)
-        for name, param in self.lstm.named_parameters():
+        rnn_kwargs = dict(
+                input_size=vocab.vectors.shape[1],
+                hidden_size=rnn_size,
+                num_layers=rnn_layers,
+                bidirectional=True,
+                batch_first=True)
+        self.rnn = nn.LSTM(**rnn_kwargs) if rnn_cell == 'LSTM' else nn.GRU(**rnn_kwargs)
+        for name, param in self.rnn.named_parameters():
             if name.startswith('weight_ih_'):
                 nn.init.xavier_uniform(param)
             elif name.startswith('weight_hh_'):
                 nn.init.orthogonal(param)
-            elif name.startswith('bias_ih_'):
+            elif name.startswith('bias_'):
                 nn.init.constant(param, 0.0)
 
         self.dense = base.Dense(
-            2 * lstm_size, len(common.LABELS),
+            2 * rnn_size, len(common.LABELS),
             output_nonlinearity='sigmoid',
             hidden_layers=dense_layers,
             hidden_nonlinearity=dense_nonlinearily,
@@ -40,19 +44,20 @@ class LSTM(base.BaseModule):
         vectors = self.embedding(text)
 
         packed_vectors = pack_padded_sequence(vectors, text_lengths.tolist(), batch_first=True)
-        h0 = self.lstm_h0.expand(-1, text.shape[0], -1).contiguous()
-        c0 = Variable(h0.data.new(h0.size()).zero_())
-        packed_lstm_output, _ = self.lstm(packed_vectors, (h0, c0))
+        h0 = self.rnn_h0.expand(-1, text.shape[0], -1).contiguous()
+        if isinstance(self.rnn, nn.LSTM):
+            h0 = (h0, Variable(h0.data.new(h0.size()).zero_()))
+        packed_rnn_output, _ = self.rnn(packed_vectors, h0)
 
-        lstm_output, _ = pad_packed_sequence(packed_lstm_output, batch_first=True)
+        rnn_output, _ = pad_packed_sequence(packed_rnn_output, batch_first=True)
         # Permute to (batch, hidden_size * num_directions, seq_len)
-        lstm_output = lstm_output.permute(0, 2, 1)
+        rnn_output = rnn_output.permute(0, 2, 1)
 
         # Make sure that the zero padding doesn't interfere with the maximum
-        zeros_as_min = lstm_output + lstm_output.min() * (lstm_output == 0).float()
-        lstm_output_max = F.max_pool1d(zeros_as_min, lstm_output.shape[-1]).squeeze(-1)
+        zeros_as_min = rnn_output + rnn_output.min() * (rnn_output == 0).float()
+        rnn_output_max = F.max_pool1d(zeros_as_min, rnn_output.shape[-1]).squeeze(-1)
 
-        output = self.dense(lstm_output_max)
+        output = self.dense(rnn_output_max)
         return output
 
 
@@ -88,14 +93,17 @@ class RNN(base.BaseModel):
         return pred_id, pred_iter
 
     def build_model(self):
-        model = LSTM(
+        model = RNNModule(
             vocab=self.vocab,
-            lstm_size=self.params['lstm_size'],
+            rnn_cell=self.params['rnn_cell'],
+            rnn_size=self.params['rnn_size'],
+            rnn_layers=self.params['rnn_layers'],
             dense_layers=self.params['dense_layers'],
             dense_nonlinearily='relu',
             dense_dropout=self.params['dense_dropout'])
         return model
 
     def update_parameters(self, model, optimizer, loss):
-        # TODO: Implement gradient clipping
+        trainable_parameters = filter(lambda p: p.requires_grad, model.parameters())
+        clip_grad_norm(trainable_parameters, 1.0)
         optimizer.step()
