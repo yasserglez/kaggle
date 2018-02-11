@@ -1,3 +1,5 @@
+import random
+
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -101,9 +103,9 @@ class RNN(base.BaseModel):
             dense_layers=self.params['dense_layers'],
             dense_nonlinearily='relu',
             dense_dropout=self.params['dense_dropout'])
-        return model
+        return model.cuda()
 
     def update_parameters(self, model, optimizer, loss):
-        trainable_parameters = filter(lambda p: p.requires_grad, model.parameters())
-        clip_grad_norm(trainable_parameters, 1.0)
+        parameters = filter(lambda p: p.requires_grad, model.parameters())
+        clip_grad_norm(parameters, 1.0)
         optimizer.step()

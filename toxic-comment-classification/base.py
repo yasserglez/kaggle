@@ -1,14 +1,14 @@
 import os
 import sys
+import math
 import pprint
 import logging
-import itertools
-from datetime import datetime, timedelta
 
 import numpy as np
 from numpy.random import RandomState
 import pandas as pd
 from sklearn.metrics import roc_auc_score
+from tqdm import tqdm
 
 import torch
 from torch import nn, optim
@@ -61,7 +61,6 @@ class BaseModel(object):
 
             preprocessed_data = preprocessing.load(self.params)
             self.fields, self.vocab = self.build_fields_and_vocab(preprocessed_data)
-
             self.train(preprocessed_data)
             self.predict(preprocessed_data)
 
@@ -104,42 +103,104 @@ class BaseModel(object):
         logger.info('Training on {:,} examples, validating on {:,} examples'
                     .format(len(train_iter.dataset), len(val_iter.dataset)))
 
-        model = self.build_model().cuda()
-        trainable_parameters = filter(lambda p: p.requires_grad, model.parameters())
-        model_size = sum([np.prod(p.size()) for p in trainable_parameters])
-        logger.info('The model has {:,} parameters:\n{}'.format(model_size, model))
+        model = self.build_model()
+        # Start with fixed embeddings
+        model.embedding.weight.requires_grad = False
+        parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
+        model_size = sum([np.prod(p.size()) for p in parameters])
+        logger.info('Optimizing {:,} parameters:\n{}'.format(model_size, model))
 
-        optimizer = self.build_optimizer(model)
-        patience_count = 0
+        # SGD with warm restarts
+        run = 0
+        t_max = 1
+        lr_max = self.params['lr_max']
+        lr_min = self.params['lr_min']
         best_val_auc = 0
+        while True:
+            # New warm-start SGD run
+            run += 1
+            t_cur, lr = 0, lr_max
+            optimizer = optim.SGD(parameters, lr=lr, momentum=0.9)
+            logger.info('Starting run {} - t_max {}'.format(run, t_max))
+            for epoch in range(t_max):
+                loss_sum = 0
+                model.train()
+                t = tqdm(train_iter, ncols=79)
+                for batch_num, batch in enumerate(t):
+                    # Update the learning rate
+                    t_cur = epoch + batch_num / len(train_iter)
+                    lr = lr_min + (lr_max - lr_min) * (1 + math.cos(math.pi * t_cur / t_max)) / 2
+                    t.set_postfix(t_cur='{:.4f}'.format(t_cur), lr='{:.6f}'.format(lr))
+                    for param_group in optimizer.param_groups:
+                        param_group['lr'] = lr
+                    # Forward and backward pass
+                    optimizer.zero_grad()
+                    loss = self.calculate_loss(model, batch)
+                    loss.backward()
+                    self.update_parameters(model, optimizer, loss)
+                    loss_sum += loss.data[0]
+                loss = loss_sum / len(train_iter)
+                logger.info('Run {} - t_cur {}/{} - lr {:.6f} - loss {:.6f}'
+                            .format(run, int(math.ceil(t_cur)), t_max, lr, loss))
 
-        for epoch in itertools.count(start=1):
-            t_start = datetime.now()
-            loss = self.train_model(model, optimizer, train_iter)
+            # Run ended - evaluate early stopping
+            model.eval()
             val_auc = self.evaluate_model(model, val_iter)
-            t_end = datetime.now()
-
-            logger.info('Epoch {:04d} - loss: {:.6g}, val_auc: {:.6g}, time: {}'
-                        .format(epoch, loss, val_auc, str(t_end - t_start).split('.')[0]))
-
             if val_auc > best_val_auc:
-                logger.info('Saving best model - val_auc: {:.6g}'.format(val_auc))
+                logger.info('Saving best model - val_auc {:.6f}'.format(val_auc))
                 self.save_model(model)
                 best_val_auc = val_auc
-                patience_count = 0
+                # Double the number of epochs for the next run
+                t_max = min(2 * t_max, 16)
             else:
-                patience_count += 1
-                if patience_count >= self.params['patience']:
-                    logger.info('Stopped - best_val_auc: {:.6g}'.format(best_val_auc))
-                    break
+                logger.info('Stopping - val_auc {:.6f}'.format(val_auc))
+                break
 
-            if epoch == 1000:
-                logger.warning('Training reached the maximum number of epochs')
+        if not self.params['lr_min']:
+            logger.info('Skipping fine-tuning')
+            logger.info('Final model - best_val_auc {:.6f}'.format(best_val_auc))
+            return
 
-    def predict(self, preprocessed_data):
+        # Fine-tuning for one epoch
+        model = self.load_model()
+        model.embedding.weight.requires_grad = True
+        parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
+        model_size = sum([np.prod(p.size()) for p in parameters])
+        logger.info('Fine-tuning {:,} parameters - best_val_auc {:.6f}'
+                    .format(model_size, best_val_auc))
+
+        lr_min = 0
+        lr = lr_max = self.params['lr_min']
+        t_cur, t_max = 0, 1
+        optimizer = optim.SGD(parameters, lr=lr, momentum=0.9)
+        model.train()
+        t = tqdm(train_iter, ncols=79)
+        for batch_num, batch in enumerate(t):
+            # Update the learning rate
+            t_cur = batch_num / len(train_iter)
+            lr = lr_min + (lr_max - lr_min) * (1 + math.cos(math.pi * t_cur / t_max)) / 2
+            t.set_postfix(t_cur='{:.4f}'.format(t_cur), lr='{:.6f}'.format(lr))
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
+            # Forward and backward pass
+            optimizer.zero_grad()
+            loss = self.calculate_loss(model, batch)
+            loss.backward()
+            self.update_parameters(model, optimizer, loss)
+
+        # Evaluate the final model
+        model.eval()
+        val_auc = self.evaluate_model(model, val_iter)
+        if val_auc > best_val_auc:
+            logger.info('Saving best model - val_auc {:.6f}'.format(val_auc))
+            self.save_model(model)
+
+        logger.info('Final model - best_val_auc {:.6f}'.format(best_val_auc))
+
+    def predic0t(self, preprocessed_data):
         pred_id, pred_iter = self.build_prediction_iterator(preprocessed_data)
         logger.info('Generating predictions for {:,} examples'.format(len(pred_iter.dataset)))
-        model = self.load_model().cuda()
+        model = self.load_model()
         output = self.predict_model(model, pred_iter)
 
         predictions = pd.DataFrame(output, columns=common.LABELS)
@@ -151,11 +212,6 @@ class BaseModel(object):
 
     def build_prediction_iterator(self, preprocessed_data):
         raise NotImplementedError
-
-    def build_optimizer(self, model):
-        trainable_parameters = filter(lambda p: p.requires_grad, model.parameters())
-        optimizer = optim.Adam(trainable_parameters, lr=self.params['lr'])
-        return optimizer
 
     def build_model(self):
         raise NotImplementedError
@@ -184,7 +240,7 @@ class BaseModel(object):
         model.eval()
         labels, predictions = [], []
         for batch in batch_iter:
-            (text, text_lengths), _ = batch.text, batch.labels
+            text, text_lengths = batch.text
             labels.append(batch.labels.data.cpu())
             output = model(text, text_lengths)
             predictions.append(output.data.cpu())
@@ -222,7 +278,6 @@ class BaseModule(nn.Module):
         self.embedding = nn.Embedding(vocab_size, embedding_size, padding_idx=0)
         self.embedding.weight.data.copy_(vocab.vectors)
         self.embedding.weight.data[vocab.stoi['<PAD>'], :] = 0
-        self.embedding.weight.requires_grad = False
 
 
 class Dense(nn.Module):
