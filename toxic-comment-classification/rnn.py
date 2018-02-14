@@ -21,11 +21,11 @@ class RNNModule(base.BaseModule):
         self.rnn_h0 = nn.Parameter(h0, requires_grad=True)
 
         rnn_kwargs = dict(
-                input_size=vocab.vectors.shape[1],
-                hidden_size=rnn_size,
-                num_layers=rnn_layers,
-                bidirectional=True,
-                batch_first=True)
+            input_size=vocab.vectors.shape[1],
+            hidden_size=rnn_size,
+            num_layers=rnn_layers,
+            bidirectional=True,
+            batch_first=True)
         self.rnn = nn.LSTM(**rnn_kwargs) if rnn_cell == 'LSTM' else nn.GRU(**rnn_kwargs)
         for name, param in self.rnn.named_parameters():
             if name.startswith('weight_ih_'):
@@ -65,39 +65,32 @@ class RNNModule(base.BaseModule):
 
 class RNN(base.BaseModel):
 
-    def build_training_iterators(self, preprocessed_data):
-        df = common.load_data(self.mode, self.random_seed, 'train.csv')
-        df['text'] = df['id'].map(preprocessed_data)
-        train_df, val_df = common.split_data(df, test_size=0.1, random_state=self.random_state)
-
-        train_dataset = base.CommentsDataset(train_df, self.fields)
-        val_dataset = base.CommentsDataset(val_df, self.fields)
-
-        train_iter, val_iter = Iterator.splits(
-            (train_dataset, val_dataset), batch_size=self.params['batch_size'],
-            repeat=False, sort_within_batch=True, sort_key=lambda x: len(x.text))
-
-        return train_iter, val_iter
-
-    def build_prediction_iterator(self, preprocessed_data):
-        df = common.load_data(self.mode, self.random_seed, 'test.csv')
+    def build_train_iterator(self, preprocessed_data):
+        df = common.load_data(self.random_seed, 'train')
         df['text'] = df['id'].map(preprocessed_data)
         dataset = base.CommentsDataset(df, self.fields)
+        train_iter = Iterator(
+            dataset, batch_size=self.params['batch_size'],
+            repeat=False, sort_within_batch=True, sort_key=lambda x: len(x.text))
+        return train_iter
 
+    def build_prediction_iterator(self, preprocessed_data, dataset):
+        df = common.load_data(self.random_seed, dataset)
+        df['text'] = df['id'].map(preprocessed_data)
+        dataset = base.CommentsDataset(df, self.fields)
         # Reorder the examples (required by pack_padded_sequence)
         sort_indices = sorted(range(len(dataset)), key=lambda i: -len(dataset[i].text))
-        pred_id = [df['id'][i] for i in sort_indices]
+        pred_id = [df['id'].iloc[i] for i in sort_indices]
         dataset.examples = [dataset.examples[i] for i in sort_indices]
         pred_iter = Iterator(
             dataset, batch_size=self.params['batch_size'],
             repeat=False, shuffle=False, sort=False)
-
         return pred_id, pred_iter
 
     def build_model(self):
         model = RNNModule(
             vocab=self.vocab,
-            rnn_cell=self.params['rnn_cell'],
+            rnn_cell='LSTM',
             rnn_size=self.params['rnn_size'],
             rnn_layers=self.params['rnn_layers'],
             dense_layers=self.params['dense_layers'],

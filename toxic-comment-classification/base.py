@@ -39,21 +39,28 @@ class CommentsDataset(Dataset):
 
 class BaseModel(object):
 
-    def __init__(self, mode, name, params, random_seed):
-        self.mode = mode
+    def __init__(self, name, params, random_seed):
         self.name = name
         self.params = params
         self.random_seed = random_seed
-        self.model_dir = os.path.join(common.DATA_DIR, self.mode, str(self.random_seed), self.name)
-        if not os.path.isdir(self.model_dir):
-            os.makedirs(self.model_dir)
-        self.output_file = os.path.join(self.model_dir, common.params_str(self.params) + '.csv')
+
+        self.output_dir = os.path.join(
+            common.OUTPUT_DIR,
+            self.name,
+            str(self.random_seed),
+            common.params_str(self.params))
+        if not os.path.isdir(self.output_dir):
+            os.makedirs(self.output_dir)
+
+        self.model_file = os.path.join(self.output_dir, 'model.pickle')
+        self.validation_file = os.path.join(self.output_dir, 'validation.csv')
+        self.test_file = os.path.join(self.output_dir, 'test.csv')
 
     def main(self):
-        logger.info(' {} / {} / {} '.format(self.mode, self.name, self.random_seed).center(60, '='))
+        logger.info(' {} / {} '.format(self.name, self.random_seed).center(62, '='))
         logger.info('Hyperparameters:\n{}'.format(pprint.pformat(self.params)))
-        if os.path.isfile(self.output_file):
-            logger.info('Output file already exists - skipping')
+        if os.path.isfile(self.test_file):
+            logger.info('{} already exists - skipping'.format(os.path.basename(self.test_file)))
         else:
             self.random_state = RandomState(self.random_seed)
             np.random.seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
@@ -70,13 +77,12 @@ class BaseModel(object):
         fields = [('text', text_field), ('labels', labels_field)]
 
         # Build the vocabulary
-        train_df = common.load_data('submission', None, 'train.csv')
-        train_df['text'] = train_df['id'].map(preprocessed_data)
-        train_dataset = CommentsDataset(train_df, fields)
-        test_df = common.load_data('submission', None, 'test.csv')
-        test_df['text'] = test_df['id'].map(preprocessed_data)
-        test_dataset = CommentsDataset(test_df, fields)
-        text_field.build_vocab(train_dataset, test_dataset)
+        datasets = []
+        for dataset in ['train', 'validation', 'test']:
+            df = common.load_data(self.random_seed, dataset)
+            df['text'] = df['id'].map(preprocessed_data)
+            datasets.append(CommentsDataset(df, fields))
+        text_field.build_vocab(*datasets)
         vocab = text_field.vocab
         assert vocab.stoi['<PAD>'] == 0
 
@@ -99,28 +105,31 @@ class BaseModel(object):
         return fields, vocab
 
     def train(self, preprocessed_data):
-        train_iter, val_iter = self.build_training_iterators(preprocessed_data)
+        train_iter = self.build_train_iterator(preprocessed_data)
+        _, val_iter = self.build_prediction_iterator(preprocessed_data, 'validation')
         logger.info('Training on {:,} examples, validating on {:,} examples'
                     .format(len(train_iter.dataset), len(val_iter.dataset)))
 
+        # Train the model keeping the word embeddings fixed until the validation AUC
+        # stops improving, then unfreeze the embeddings and fine-tune the entire
+        # model with a lower learning rate. Use SGD with warm restarts.
         model = self.build_model()
-        # Start with fixed embeddings
         model.embedding.weight.requires_grad = False
         parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
         model_size = sum([np.prod(p.size()) for p in parameters])
         logger.info('Optimizing {:,} parameters:\n{}'.format(model_size, model))
-
-        # SGD with warm restarts
         run = 0
         t_max = 1
-        lr_max = self.params['lr_max']
-        lr_min = self.params['lr_min']
+        lr_max, lr_min = self.params['lr_high'], 0
         best_val_auc = 0
+
         while True:
-            # New warm-start SGD run
             run += 1
+            # grad_norms = []
             t_cur, lr = 0, lr_max
-            optimizer = optim.SGD(parameters, lr=lr, momentum=0.9)
+            optimizer = optim.SGD(
+                parameters, lr=lr, momentum=0.9, nesterov=True,
+                weight_decay=self.params['weight_decay'])
             logger.info('Starting run {} - t_max {}'.format(run, t_max))
             for epoch in range(t_max):
                 loss_sum = 0
@@ -137,11 +146,15 @@ class BaseModel(object):
                     optimizer.zero_grad()
                     loss = self.calculate_loss(model, batch)
                     loss.backward()
+                    # grad_vector = [p.grad.data.view(-1) for p in parameters]
+                    # grad_norms.append(torch.cat(grad_vector).norm())
                     self.update_parameters(model, optimizer, loss)
                     loss_sum += loss.data[0]
                 loss = loss_sum / len(train_iter)
                 logger.info('Run {} - t_cur {}/{} - lr {:.6f} - loss {:.6f}'
                             .format(run, int(math.ceil(t_cur)), t_max, lr, loss))
+                # https://arxiv.org/abs/1212.0901
+                # logger.info('Average norm of the gradient - {:.6f}'.format(np.mean(grad_norms)))
 
             # Run ended - evaluate early stopping
             model.eval()
@@ -154,63 +167,37 @@ class BaseModel(object):
                 t_max = min(2 * t_max, 16)
             else:
                 logger.info('Stopping - val_auc {:.6f}'.format(val_auc))
-                break
-
-        if not self.params['lr_min']:
-            logger.info('Skipping fine-tuning')
-            logger.info('Final model - best_val_auc {:.6f}'.format(best_val_auc))
-            return
-
-        # Fine-tuning for one epoch
-        model = self.load_model()
-        model.embedding.weight.requires_grad = True
-        parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
-        model_size = sum([np.prod(p.size()) for p in parameters])
-        logger.info('Fine-tuning {:,} parameters - best_val_auc {:.6f}'
-                    .format(model_size, best_val_auc))
-
-        lr_min = 0
-        lr = lr_max = self.params['lr_min']
-        t_cur, t_max = 0, 1
-        optimizer = optim.SGD(parameters, lr=lr, momentum=0.9)
-        model.train()
-        t = tqdm(train_iter, ncols=79)
-        for batch_num, batch in enumerate(t):
-            # Update the learning rate
-            t_cur = batch_num / len(train_iter)
-            lr = lr_min + (lr_max - lr_min) * (1 + math.cos(math.pi * t_cur / t_max)) / 2
-            t.set_postfix(t_cur='{:.4f}'.format(t_cur), lr='{:.6f}'.format(lr))
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = lr
-            # Forward and backward pass
-            optimizer.zero_grad()
-            loss = self.calculate_loss(model, batch)
-            loss.backward()
-            self.update_parameters(model, optimizer, loss)
-
-        # Evaluate the final model
-        model.eval()
-        val_auc = self.evaluate_model(model, val_iter)
-        if val_auc > best_val_auc:
-            logger.info('Saving best model - val_auc {:.6f}'.format(val_auc))
-            self.save_model(model)
+                if self.params['lr_low'] == 0 or model.embedding.weight.requires_grad:
+                    # Fine-tuning not needed or it just finished
+                    break
+                else:
+                    model = self.load_model()
+                    model.embedding.weight.requires_grad = True
+                    parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
+                    model_size = sum([np.prod(p.size()) for p in parameters])
+                    logger.info('Fine-tuning {:,} parameters - best_val_auc {:.6f}'
+                                .format(model_size, best_val_auc))
+                    run = 0
+                    t_max = 1
+                    lr_max, lr_min = self.params['lr_low'], 0
 
         logger.info('Final model - best_val_auc {:.6f}'.format(best_val_auc))
 
-    def predic0t(self, preprocessed_data):
-        pred_id, pred_iter = self.build_prediction_iterator(preprocessed_data)
-        logger.info('Generating predictions for {:,} examples'.format(len(pred_iter.dataset)))
+    def predict(self, preprocessed_data):
         model = self.load_model()
-        output = self.predict_model(model, pred_iter)
+        for dataset in ['validation', 'test']:
+            csv_file = self.validation_file if dataset == 'validation' else self.test_file
+            logger.info('Generating {}'.format(os.path.basename(csv_file)))
+            pred_id, pred_iter = self.build_prediction_iterator(preprocessed_data, dataset)
+            output = self.predict_model(model, pred_iter)
+            predictions = pd.DataFrame(output, columns=common.LABELS)
+            predictions.insert(0, 'id', pred_id)
+            predictions.to_csv(csv_file, index=False)
 
-        predictions = pd.DataFrame(output, columns=common.LABELS)
-        predictions.insert(0, 'id', pred_id)
-        predictions.to_csv(self.output_file, index=False)
-
-    def build_training_iterators(self, preprocessed_data):
+    def build_train_iterator(self, preprocessed_data):
         raise NotImplementedError
 
-    def build_prediction_iterator(self, preprocessed_data):
+    def build_prediction_iterator(self, preprocessed_data, dataset):
         raise NotImplementedError
 
     def build_model(self):
@@ -260,13 +247,11 @@ class BaseModel(object):
         return predictions
 
     def save_model(self, model):
-        file_path = os.path.join(self.model_dir, common.params_str(self.params) + '.pickle')
-        torch.save(model.state_dict(), file_path)
+        torch.save(model.state_dict(), self.model_file)
 
     def load_model(self):
         model = self.build_model()
-        file_path = os.path.join(self.model_dir, common.params_str(self.params) + '.pickle')
-        model.load_state_dict(torch.load(file_path))
+        model.load_state_dict(torch.load(self.model_file))
         return model
 
 
@@ -319,6 +304,9 @@ class Dense(nn.Module):
                 gain = nn.init.calculate_gain(hidden_nonlinearity)
                 nn.init.xavier_uniform(layer.weight, gain=gain)
                 nn.init.constant(layer.bias, 0.0)
+        if output_nonlinearity and output_nonlinearity != hidden_nonlinearity:
+            gain = nn.init.calculate_gain(output_nonlinearity)
+            nn.init.xavier_uniform(layers[-2].weight, gain=gain)
 
     def forward(self, x):
         return self.dense(x)
