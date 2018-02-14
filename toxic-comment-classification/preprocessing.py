@@ -1,11 +1,12 @@
 import os
 import re
+import string
 import logging
 from collections import Counter
 import multiprocessing as mp
 
 import joblib
-import pandas as pd
+from unidecode import unidecode
 
 import spacy
 english = spacy.load('en')
@@ -16,9 +17,9 @@ import common
 logger = logging.getLogger(__name__)
 
 
-BASE_DIR = os.path.join(common.DATA_DIR, 'preprocessing')
-if not os.path.isdir(BASE_DIR):
-    os.makedirs(BASE_DIR)
+OUTPUT_DIR = os.path.join(common.OUTPUT_DIR, 'preprocessing')
+if not os.path.isdir(OUTPUT_DIR):
+    os.makedirs(OUTPUT_DIR)
 
 
 def load(params):
@@ -30,17 +31,17 @@ def load(params):
     """
     param_names = ('vocab_size', 'max_len')
     params = {k: params[k] for k in param_names}
-    output_file = os.path.join(BASE_DIR, common.params_str(params))
+    output_file = os.path.join(OUTPUT_DIR, common.params_str(params))
 
     if os.path.isfile(output_file):
-        logger.info(f'Loading {output_file[len(common.DATA_DIR) + 1:]}')
+        logger.info(f'Loading {output_file[len(common.OUTPUT_DIR) + 1:]}')
         preprocessed_data = joblib.load(output_file)
         return preprocessed_data
 
-    logger.info(f'Generating {output_file[len(common.DATA_DIR) + 1:]}')
+    logger.info(f'Generating {output_file[len(common.OUTPUT_DIR) + 1:]}')
 
     preprocessed_data = {}
-    raw_data = load_raw_data()
+    raw_data = common.load_raw_data()
     with mp.Pool(processes=mp.cpu_count()) as pool:
         results = pool.imap_unordered(preprocess_row, raw_data.items(), chunksize=100)
         for k, (id_, words) in enumerate(results, start=1):
@@ -63,24 +64,12 @@ def load(params):
     return preprocessed_data
 
 
-def load_raw_data():
-    df_parts = []
-    for csv_file in ['train.csv', 'test.csv']:
-        csv_path = os.path.join(common.DATA_DIR, 'submission', csv_file)
-        df_part = pd.read_csv(csv_path, usecols=['id', 'comment_text'])
-        df_parts.append(df_part)
-    df = pd.concat(df_parts)
-    df['comment_text'].fillna('', inplace=True)
-    raw_data = {row[0]: row[1] for row in df.itertuples(index=False)}
-    return raw_data
-
-
 def preprocess_row(row):
     return row[0], preprocess(row[1])
 
 
 def preprocess(text):
-    # Wikipedia syntax for indentation, wrong quotes in CSV?
+    # Strip whitespaces, double quotes in the CSV, Wikipedia syntax for indentation
     text = text.strip().strip('"').lstrip(':')
 
     # Delete all text for some comments
@@ -95,7 +84,10 @@ def preprocess(text):
     # Lowercase
     text = text.lower()
 
-    # Wikipedia namespaces that will be replaced by <URL>
+    # Convert to ASCII (unidecode does some clever transliterations)
+    text = unidecode(text)
+
+    # Wikipedia namespaces that will be replaced below by <URL>
     text = re.sub(r'image:.+\.(jpg|jpeg|gif)', ' http://image.jpg ', text)
     text = re.sub(r'[a-z_]+:[^\s]+', ' http://namespace.com ', text)
 
@@ -110,16 +102,9 @@ def preprocess(text):
     # Remove IP addresses
     text = ip_re.sub('', text)
 
-    # Replace specific characters
-    replace_map = {
-        '…': '...',
-        '—': '-',
-        '“': '"',
-        '”': '"',
-        '=': '',
-    }
-    for old, new in replace_map.items():
-        text = text.replace(old, new)
+    # Replace specific words
+    for old_re, new in word_replace.items():
+        text = old_re.sub(new, text)
 
     words = []
     for token in english.tokenizer(text):
@@ -136,9 +121,26 @@ def preprocess(text):
         words.append(word)
 
     if not words:
-        words.append('<URL>')
+        words.append('<UNK>')
 
     return words
+
+
+word_replace = {
+    re.compile('f[' + string.punctuation + ']+ck'): 'fuck',
+    re.compile('fu[' + string.punctuation + ']+k'): 'fuck',
+    re.compile('f[' + string.punctuation + ']{2,}k'): 'fuck',
+    re.compile('fuk{2,}'): 'fuck',
+    re.compile('fuck{2,}'): 'fuck',
+    re.compile('f[' + string.punctuation + ']+ggot'): 'faggot',
+    re.compile('fagg[' + string.punctuation + ']+t'): 'faggot',
+    re.compile('s[' + string.punctuation + ']+it'): 'shit',
+    re.compile('sh[' + string.punctuation + '1' + ']+t'): 'shit',
+    re.compile('s[' + string.punctuation + ']{2,}t'): 'shit',
+    re.compile('gayreek'): 'gay greek',
+}
+
+allowed_chars = set(string.ascii_lowercase + '."/!,;\'-')
 
 
 # https://www.regextester.com/93652
