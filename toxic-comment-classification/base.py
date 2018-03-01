@@ -9,9 +9,10 @@ from numpy.random import RandomState
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 from tqdm import tqdm
+from tensorboardX import SummaryWriter
 
 import torch
-from torch import nn, optim
+from torch import nn, optim, autograd
 from torch.nn import functional as F
 from torchtext.data import Dataset, Field, Example
 from torchtext.vocab import Vectors, pretrained_aliases
@@ -39,10 +40,11 @@ class CommentsDataset(Dataset):
 
 class BaseModel(object):
 
-    def __init__(self, name, params, random_seed):
+    def __init__(self, name, params, random_seed, debug=False):
         self.name = name
         self.params = params
         self.random_seed = random_seed
+        self.debug = debug
 
         self.output_dir = os.path.join(
             common.OUTPUT_DIR,
@@ -52,15 +54,19 @@ class BaseModel(object):
         if not os.path.isdir(self.output_dir):
             os.makedirs(self.output_dir)
 
-        self.model_file = os.path.join(self.output_dir, 'model.pickle')
-        self.validation_file = os.path.join(self.output_dir, 'validation.csv')
-        self.test_file = os.path.join(self.output_dir, 'test.csv')
+        if self.debug:
+            self.writer = SummaryWriter(self.output_dir)
+
+        self.model_output = os.path.join(self.output_dir, 'model.pickle')
+        self.train_output = os.path.join(self.output_dir, 'train.csv')
+        self.validation_output = os.path.join(self.output_dir, 'validation.csv')
+        self.test_output = os.path.join(self.output_dir, 'test.csv')
 
     def main(self):
         logger.info(' {} / {} '.format(self.name, self.random_seed).center(62, '='))
         logger.info('Hyperparameters:\n{}'.format(pprint.pformat(self.params)))
-        if os.path.isfile(self.test_file):
-            logger.info('{} already exists - skipping'.format(os.path.basename(self.test_file)))
+        if os.path.isfile(self.test_output):
+            logger.info('Output already exists - skipping')
         else:
             self.random_state = RandomState(self.random_seed)
             np.random.seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
@@ -118,27 +124,29 @@ class BaseModel(object):
         parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
         model_size = sum([np.prod(p.size()) for p in parameters])
         logger.info('Optimizing {:,} parameters:\n{}'.format(model_size, model))
-        run = 0
+        run = epoch = 0
+        lr_max = self.params['lr_high']
+        optimizer = optim.SGD(parameters, lr=lr_max, momentum=0.9)
         t_max = 1
-        lr_max, lr_min = self.params['lr_high'], 0
         best_val_auc = 0
 
         while True:
             run += 1
             # grad_norms = []
             t_cur, lr = 0, lr_max
-            optimizer = optim.SGD(
-                parameters, lr=lr, momentum=0.9, nesterov=True,
-                weight_decay=self.params['weight_decay'])
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
+
             logger.info('Starting run {} - t_max {}'.format(run, t_max))
-            for epoch in range(t_max):
+            for t_index in range(t_max):
+                epoch += 1
                 loss_sum = 0
                 model.train()
                 t = tqdm(train_iter, ncols=79)
-                for batch_num, batch in enumerate(t):
+                for batch_index, batch in enumerate(t):
                     # Update the learning rate
-                    t_cur = epoch + batch_num / len(train_iter)
-                    lr = lr_min + (lr_max - lr_min) * (1 + math.cos(math.pi * t_cur / t_max)) / 2
+                    t_cur = t_index + batch_index / len(train_iter)
+                    lr = lr_max * (1 + math.cos(math.pi * t_cur / t_max)) / 2
                     t.set_postfix(t_cur='{:.4f}'.format(t_cur), lr='{:.6f}'.format(lr))
                     for param_group in optimizer.param_groups:
                         param_group['lr'] = lr
@@ -151,15 +159,19 @@ class BaseModel(object):
                     self.update_parameters(model, optimizer, loss)
                     loss_sum += loss.data[0]
                 loss = loss_sum / len(train_iter)
-                logger.info('Run {} - t_cur {}/{} - lr {:.6f} - loss {:.6f}'
-                            .format(run, int(math.ceil(t_cur)), t_max, lr, loss))
+                logger.info('Epoch {} - run {} - t_cur {}/{} - lr {:.6f} - loss {:.6f}'
+                            .format(epoch, run, int(math.ceil(t_cur)), t_max, lr, loss))
+
                 # https://arxiv.org/abs/1212.0901
                 # logger.info('Average norm of the gradient - {:.6f}'.format(np.mean(grad_norms)))
+                if self.debug:
+                    auc = self.evaluate_model(model, train_iter)
+                    val_auc = self.evaluate_model(model, val_iter)
+                    self.writer.add_scalars('auc', {'train': auc, 'validation': val_auc}, epoch)
 
             # Run ended - evaluate early stopping
-            model.eval()
             val_auc = self.evaluate_model(model, val_iter)
-            if val_auc > best_val_auc:
+            if round(val_auc - best_val_auc, 4) > 0:  # TODO: consider increasing precision
                 logger.info('Saving best model - val_auc {:.6f}'.format(val_auc))
                 self.save_model(model)
                 best_val_auc = val_auc
@@ -178,16 +190,19 @@ class BaseModel(object):
                     logger.info('Fine-tuning {:,} parameters - best_val_auc {:.6f}'
                                 .format(model_size, best_val_auc))
                     run = 0
+                    lr_max = self.params['lr_low']
+                    optimizer = optim.SGD(parameters, lr=lr_max, momentum=0.9)
                     t_max = 1
-                    lr_max, lr_min = self.params['lr_low'], 0
 
         logger.info('Final model - best_val_auc {:.6f}'.format(best_val_auc))
 
     def predict(self, preprocessed_data):
         model = self.load_model()
-        for dataset in ['validation', 'test']:
-            csv_file = self.validation_file if dataset == 'validation' else self.test_file
-            logger.info('Generating {}'.format(os.path.basename(csv_file)))
+        for dataset in ['train', 'validation', 'test']:
+            csv_file = (self.train_output if dataset == 'train' else
+                        self.validation_output if dataset == 'validation' else
+                        self.test_output)
+            logger.info('Generating {} predictions'.format(dataset))
             pred_id, pred_iter = self.build_prediction_iterator(preprocessed_data, dataset)
             output = self.predict_model(model, pred_iter)
             predictions = pd.DataFrame(output, columns=common.LABELS)
@@ -202,17 +217,6 @@ class BaseModel(object):
 
     def build_model(self):
         raise NotImplementedError
-
-    def train_model(self, model, optimizer, train_iter):
-        loss_sum = 0
-        model.train()
-        for batch in train_iter:
-            optimizer.zero_grad()
-            loss = self.calculate_loss(model, batch)
-            loss.backward()
-            self.update_parameters(model, optimizer, loss)
-            loss_sum += loss.data[0]
-        return loss_sum / len(train_iter)
 
     def calculate_loss(self, model, batch):
         (text, text_lengths), labels = batch.text, batch.labels
@@ -247,11 +251,11 @@ class BaseModel(object):
         return predictions
 
     def save_model(self, model):
-        torch.save(model.state_dict(), self.model_file)
+        torch.save(model.state_dict(), self.model_output)
 
     def load_model(self):
         model = self.build_model()
-        model.load_state_dict(torch.load(self.model_file))
+        model.load_state_dict(torch.load(self.model_output))
         return model
 
 
@@ -259,8 +263,8 @@ class BaseModule(nn.Module):
 
     def __init__(self, vocab):
         super().__init__()
-        vocab_size, embedding_size = vocab.vectors.shape
-        self.embedding = nn.Embedding(vocab_size, embedding_size, padding_idx=0)
+        vocab_size, embed_size = vocab.vectors.shape
+        self.embedding = nn.Embedding(vocab_size, embed_size, padding_idx=0)
         self.embedding.weight.data.copy_(vocab.vectors)
         self.embedding.weight.data[vocab.stoi['<PAD>'], :] = 0
 
@@ -275,18 +279,31 @@ class Dense(nn.Module):
     }
 
     def __init__(self, input_size, output_size, output_nonlinearity=None,
-                 hidden_layers=0, hidden_nonlinearity=None, dropout=0):
+                 hidden_layers=0, hidden_nonlinearity=None,
+                 input_dropout=0, hidden_dropout=0, dropout=0):
 
         super().__init__()
 
-        # Increase/decrease the number of units linearly from input to output
-        units = np.linspace(input_size, output_size, hidden_layers + 2)
-        units = list(map(int, np.round(units, 0)))
+        if isinstance(hidden_layers, list):
+            # The number of hidden units for each layer is explicitly given
+            units = [input_size] + hidden_layers + [output_size]
+        else:
+            # Increase/decrease the number of units linearly from input to output
+            units = np.linspace(input_size, output_size, hidden_layers + 2)
+            units = list(map(int, np.round(units, 0)))
+
+        if dropout:
+            # Use the same dropout for the input and hidden layers
+            input_dropout = hidden_dropout = dropout
 
         layers = []
-        for in_size, out_size in zip(units, units[1:]):
-            if dropout:
-                layers.append(nn.Dropout(dropout))
+        for layer_index, (in_size, out_size) in enumerate(zip(units, units[1:])):
+            if layer_index == 0:
+                if input_dropout:
+                    layers.append(nn.Dropout(input_dropout))
+            else:
+                if hidden_dropout:
+                    layers.append(nn.Dropout(hidden_dropout))
             layers.append(nn.Linear(in_size, out_size))
             if hidden_nonlinearity:
                 layers.append(self.nonlinearities[hidden_nonlinearity])
@@ -299,9 +316,10 @@ class Dense(nn.Module):
 
         self.dense = nn.Sequential(*layers)
 
+        # Weight initialization
         for layer in layers:
             if isinstance(layer, nn.Linear):
-                gain = nn.init.calculate_gain(hidden_nonlinearity)
+                gain = nn.init.calculate_gain(hidden_nonlinearity) if hidden_nonlinearity else 1.0
                 nn.init.xavier_uniform(layer.weight, gain=gain)
                 nn.init.constant(layer.bias, 0.0)
         if output_nonlinearity and output_nonlinearity != hidden_nonlinearity:

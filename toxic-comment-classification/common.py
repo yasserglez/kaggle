@@ -21,7 +21,8 @@ LABELS = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate
 
 def params_str(params):
     sorted_params = sorted(params.items(), key=lambda x: x[0])
-    s = '_'.join(['{}={}'.format(k.replace('_', '-'), v) for k, v in sorted_params])
+    format_value = lambda v: '-'.join(sorted(v)) if isinstance(v, list) else v
+    s = '_'.join(['{}={}'.format(k.replace('_', '-'), format_value(v)) for k, v in sorted_params])
     return s
 
 

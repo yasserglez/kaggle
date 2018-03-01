@@ -16,8 +16,12 @@ def main():
         for random_seed in os.listdir(os.path.join(*path)):
             if not os.path.isdir(os.path.join(*path, random_seed)):
                 continue
-            path.append(random_seed)
-            val_df = common.load_data(int(random_seed), 'validation').sort_values('id')
+            try:
+                random_seed = int(random_seed)
+            except ValueError:
+                continue
+            path.append(str(random_seed))
+            val_df = common.load_data(random_seed, 'validation').sort_values('id')
             target = val_df[common.LABELS].values
             results = []
             for params_str in os.listdir(os.path.join(*path)):
@@ -36,8 +40,9 @@ def main():
                         model_results[k] = v
                     results.append(model_results)
                 path.pop()
-            results = pd.DataFrame(results).sort_values('auc', ascending=False)
-            results.to_csv(os.path.join(*path, 'evaluation.csv'), index=False)
+            if results:
+                results = pd.DataFrame(results).sort_values('auc', ascending=False)
+                results.to_csv(os.path.join(*path, 'evaluation.csv'), index=False)
             path.pop()
         path.pop()
 
