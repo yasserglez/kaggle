@@ -3,9 +3,9 @@ import os
 import pandas as pd
 
 import common
-from mlp import MLP
-from cnn import CNN
 from rnn import RNN
+from cnn import CNN
+from mlp import MLP
 from xgb import XGB
 
 
@@ -15,52 +15,28 @@ class Bagging(object):
 
     random_seeds = {
         'rnn': [
-            9144,
-            26871,
-            53072,
-        #     93732,
-        #     1895,
-        #     49322,
-        #     62881,
-        #     20266,
-        #     63693,
-        #     64789,
+            9144, 26871, 53072, 93732, 1895,
+            49322, 62881, 20266, 63693, 64789,
+            31227, 29511, 85081, 76077, 67604,
+            96250, 29544, 2305, 48880, 93100,
         ],
         'cnn': [
-            47353,
-            19168,
-            10183,
-            #     42201,
-            #     71124,
-            #     13008,
-            #     1233,
-            #     81194,
-            #     317,
-            #     92014,
+            47353, 19168, 10183, 42201, 71124,
+            13008, 1233, 81194, 317, 92014,
+            20952, 24879, 56456, 313, 66088,
+            57098, 41786, 28477, 48242, 69630,
         ],
         'mlp': [
-            17020,
-            56990,
-            87365,
-        #     50084,
-        #     17100,
-        #     82993,
-        #     70640,
-        #     36822
-        #     58374,
-        #     90613,
+            17020, 56990, 87365, 50084, 17100,
+            82993, 70640, 36822, 58374, 90613,
+            62663, 82821, 41931, 45652, 47827,
+            66098, 30633, 6704, 98359, 80705,
         ],
         'xgb': [
-            64554,
-            3155,
-            87476,
-            # 63627,
-            # 42140,
-            # 20676,
-            # 79527,
-            # 5148,
-            # 60709,
-            # 97981,
+            64554, 3155, 87476, 63627, 42140,
+            20676, 79527, 5148, 60709, 97981,
+            60271, 45670, 65522, 94692, 38212,
+            79848, 47116, 21454, 70993, 6530,
         ],
     }
 
@@ -107,7 +83,7 @@ class Bagging(object):
             'min_df': 5,
             'learning_rate': 0.1,
             'max_depth': 6,
-        }
+        },
     }
 
     def __init__(self, name):
@@ -130,7 +106,8 @@ class Bagging(object):
 
             train_df = pd.read_csv(model.train_output)
             val_df = pd.read_csv(model.validation_output)
-            train_outputs.append(pd.concat([train_df, val_df]))
+            train_output = pd.concat([train_df, val_df])
+            train_outputs.append(train_output)
 
             test_df = pd.read_csv(model.test_output)
             test_outputs.append(test_df)

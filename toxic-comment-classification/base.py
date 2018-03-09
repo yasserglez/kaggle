@@ -3,6 +3,7 @@ import sys
 import math
 import pprint
 import logging
+from datetime import datetime
 
 import numpy as np
 from numpy.random import RandomState
@@ -63,19 +64,23 @@ class BaseModel(object):
         self.test_output = os.path.join(self.output_dir, 'test.csv')
 
     def main(self):
+        t_start = datetime.now()
         logger.info(' {} / {} '.format(self.name, self.random_seed).center(62, '='))
         logger.info('Hyperparameters:\n{}'.format(pprint.pformat(self.params)))
         if os.path.isfile(self.test_output):
             logger.info('Output already exists - skipping')
-        else:
-            self.random_state = RandomState(self.random_seed)
-            np.random.seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
-            torch.manual_seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
+            return
 
-            preprocessed_data = preprocessing.load(self.params)
-            self.fields, self.vocab = self.build_fields_and_vocab(preprocessed_data)
-            self.train(preprocessed_data)
-            self.predict(preprocessed_data)
+        self.random_state = RandomState(self.random_seed)
+        np.random.seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
+        torch.manual_seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
+
+        preprocessed_data = preprocessing.load(self.params)
+        self.fields, self.vocab = self.build_fields_and_vocab(preprocessed_data)
+        self.train(preprocessed_data)
+        self.predict(preprocessed_data)
+
+        logger.info('Elapsed time - {}'.format(datetime.now() - t_start))
 
     def build_fields_and_vocab(self, preprocessed_data):
         text_field = Field(pad_token='<PAD>', unk_token=None, batch_first=True, include_lengths=True)
@@ -171,7 +176,7 @@ class BaseModel(object):
 
             # Run ended - evaluate early stopping
             val_auc = self.evaluate_model(model, val_iter)
-            if round(val_auc - best_val_auc, 4) > 0:  # TODO: consider increasing precision
+            if val_auc > best_val_auc:
                 logger.info('Saving best model - val_auc {:.6f}'.format(val_auc))
                 self.save_model(model)
                 best_val_auc = val_auc

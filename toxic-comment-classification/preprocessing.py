@@ -53,7 +53,7 @@ def load(params):
     counter = Counter()
     for id_, words in preprocessed_data.items():
         counter.update(set(words))
-    vocab = set(word for word, count in counter.most_common(params['vocab_size']))
+    vocab = set(word for word, count in counter.most_common(params['vocab_size'] - 1))
 
     logger.info('Replacing out-of-vocabulary words with <UNK>')
     for id_, words in preprocessed_data.items():
@@ -69,6 +69,10 @@ def preprocess_row(row):
 
 
 def preprocess(text):
+
+    # Convert to ASCII (unidecode does some clever transliterations)
+    text = unidecode(text)
+
     # Strip whitespaces, double quotes in the CSV, Wikipedia syntax for indentation
     text = text.strip().strip('"').lstrip(':')
 
@@ -78,18 +82,20 @@ def preprocess(text):
     if 'cellpadding' in text and 'cellspacing' in text:
         return ['<URL>']
 
-    # Ignore everything enclosed in {}
-    text = re.sub(r'\{[^{}]+\}', '', text)
-
     # Lowercase
     text = text.lower()
 
-    # Convert to ASCII (unidecode does some clever transliterations)
-    text = unidecode(text)
+    # Ignore everything enclosed in {}
+    if text.startswith('{{unblock|'):
+        text = text[10:].rstrip('{}')
+    else:
+        text = re.sub(r'\{[^{}]+\}', '', text)
 
-    # Wikipedia namespaces that will be replaced below by <URL>
+    # Wikipedia specific syntax
     text = re.sub(r'image:.+\.(jpg|jpeg|gif)', ' http://image.jpg ', text)
     text = re.sub(r'[a-z_]+:[^\s]+', ' http://namespace.com ', text)
+    if text.endswith('talk/email'):
+        text = text[:-10].rstrip(' -')
 
     # Replace sequences of whitespace characters with a single space
     text = re.sub(r'\s{2,}', ' ', text)
@@ -110,15 +116,45 @@ def preprocess(text):
     for token in english.tokenizer(text):
         word = token.text
 
+        # Ignore spaces
         if word.isspace():
             continue
 
+        # Use a manually filtered down list of short tokens
+        if len(word) <= 3 and word not in short_words:
+            word = '<UNK>'
+
+        # Normalize haha and lol
+        for x in 'aeiou':
+            for k in range(5, 1, -1):
+                hx = ('h' + x) * k
+                if word.startswith(hx):
+                    word = hx
+                    break
+        for k in range(5, 1, -1):
+            lol = 'lo' * k
+            if word.startswith(lol):
+                word = lol
+                break
+
         if word.isnumeric() or number_re.match(word):
             word = '<NUM>'
-        elif url_re.match(word):
-            word = '<URL>'
 
-        words.append(word)
+        if '@' in word:
+            words.append('<URL>')
+        elif url_re.match(word):
+            if re.match(r'[^.]+\.[^.]+', word):
+                word_parts = word.split('.')
+                if len(word_parts[-1]) > 3:
+                    # Separate words joined by a period
+                    words.extend(word_parts)
+                else:
+                    words.append('<URL>')
+            else:
+                words.append('<URL>')
+        else:
+            # All the other words are added here
+            words.append(word)
 
     if not words:
         words.append('<UNK>')
@@ -132,15 +168,21 @@ word_replace = {
     re.compile('f[' + string.punctuation + ']{2,}k'): 'fuck',
     re.compile('fuk{2,}'): 'fuck',
     re.compile('fuck{2,}'): 'fuck',
+    re.compile('f[' + string.punctuation + ']+ing'): 'fucking',
     re.compile('f[' + string.punctuation + ']+ggot'): 'faggot',
     re.compile('fagg[' + string.punctuation + ']+t'): 'faggot',
     re.compile('s[' + string.punctuation + ']+it'): 'shit',
     re.compile('sh[' + string.punctuation + '1' + ']+t'): 'shit',
     re.compile('s[' + string.punctuation + ']{2,}t'): 'shit',
-    re.compile('gayreek'): 'gay greek',
+    re.compile('s[' + string.punctuation + ']+ck'): 'suck',
+    re.compile('s[' + string.punctuation + ']+uck'): 'suck',
+    re.compile('su[' + string.punctuation + ']+ck'): 'suck',
+    re.compile('suc[' + string.punctuation + ']+k'): 'suck',
+    re.compile('c[' + string.punctuation + ']+ck'): 'cock',
+    re.compile('c[' + string.punctuation + ']+ock'): 'cock',
+    re.compile('co[' + string.punctuation + ']+ck'): 'cock',
+    re.compile('coc[' + string.punctuation + ']+k'): 'cock',
 }
-
-allowed_chars = set(string.ascii_lowercase + '."/!,;\'-')
 
 
 # https://www.regextester.com/93652
@@ -150,3 +192,54 @@ url_re = re.compile(r'(http:\/\/www\.|https:\/\/www\.|http:\/\/|https:\/\/)?[a-z
 number_re = re.compile(r'[0-9]{1,3}(,[0-9]{3})*(\.[0-9]+)?\b|\.[0-9]+')
 
 ip_re = re.compile(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}')
+
+
+short_words = {
+    '!', '"', '$', '%', '&', "'", "'d", "'em", "'ll", "'m", "'re", "'s",
+    "'ve", '(', ')', ',', '-', '--', '.', '...', '/', '1st', '2nd',
+    '3rd', '4th', '5th', '6th', '7th', '8th', '9th', ':', ':*', ';',
+    ';)', ';-)', '<3', '=)', '?', '[', ']', 'a', 'abc', 'act', 'ad',
+    'add', 'ads', 'afd', 'age', 'ago', 'ah', 'ahh', 'ai', 'aid', 'aim',
+    'air', 'aka', 'ali', 'all', 'alt', 'am', 'an', 'and', 'ani', 'ann',
+    'any', 'aol', 'apr', 'are', 'arm', 'art', 'as', 'ask', 'ass', 'at',
+    'ate', 'aug', 'axe', 'bad', 'bag', 'ban', 'bar', 'bat', 'bay', 'bbc',
+    'be', 'bed', 'beg', 'ben', 'bet', 'big', 'bin', 'bio', 'bit', 'bob',
+    'bot', 'bow', 'box', 'boy', 'bro', 'btw', 'bug', 'bum', 'bus', 'but',
+    'buy', 'by', 'bye', 'can', 'cap', 'car', 'cat', 'cbs', 'ceo', 'cia',
+    'cnn', 'coi', 'com', 'con', 'cop', 'cos', 'cow', 'cry', 'csd', 'cum',
+    'cup', 'cut', 'cuz', 'dab', 'dad', 'dam', 'dan', 'dat', 'day', 'de',
+    'dec', 'del', 'den', 'der', 'did', 'die', 'dig', 'dis', 'dna', 'do',
+    'doc', 'dog', 'don', 'dot', 'dr', 'dry', 'due', 'duh', 'dvd', 'dyk',
+    'ear', 'eat', 'eg', 'egg', 'ego', 'eh', 'emo', 'en', 'end', 'era',
+    'err', 'esp', 'est', 'et', 'etc', 'eye', 'fac', 'fag', 'fan', 'faq',
+    'far', 'fat', 'fbi', 'feb', 'fed', 'few', 'fit', 'fix', 'fly', 'for',
+    'fox', 'fun', 'fur', 'fyi', 'gan', 'gap', 'gas', 'gay', 'get', 'gnu',
+    'go', 'god', 'gon', 'got', 'gun', 'guy', 'ha', 'had', 'has', 'hat',
+    'he', 'heh', 'her', 'hey', 'hi', 'him', 'hip', 'his', 'hit', 'hiv',
+    'hmm', 'hoe', 'hop', 'hot', 'how', 'hub', 'huh', 'i', "i'm", 'ian',
+    'ice', 'ie', 'if', 'iii', 'ill', 'imo', 'in', 'inc', 'ip', 'ipa',
+    'ips', 'irc', 'is', 'isp', 'it', 'its', 'jan', 'jay', 'jet', 'jew',
+    'jim', 'job', 'joe', 'joy', 'jun', 'ken', 'key', 'kid', 'kim', 'kkk',
+    'lab', 'law', 'lay', 'led', 'lee', 'leg', 'let', 'lie', 'lil', 'log',
+    'lol', 'los', 'lot', 'low', 'mac', 'mad', 'man', 'map', 'mar', 'max',
+    'may', 'me', 'mel', 'men', 'met', 'mid', 'mis', 'mit', 'mix', 'mmm',
+    'mob', 'mod', 'mom', 'mos', 'mr', 'mrs', 'mtv', 'mud', 'mum', 'my',
+    "n't", 'nah', 'neo', 'net', 'new', 'nfl', 'no', 'nom', 'non', 'nor',
+    'not', 'nov', 'now', 'nt', 'nut', 'oct', 'odd', 'of', 'off', 'oh',
+    'oil', 'ok', 'old', 'omg', 'on', 'one', 'opt', 'or', 'org', 'our',
+    'out', 'owe', 'own', 'pal', 'pan', 'par', 'pat', 'pay', 'pdf', 'pen',
+    'per', 'pet', 'phd', 'pic', 'pie', 'pig', 'pin', 'pit', 'pls', 'plz',
+    'poo', 'pop', 'pot', 'pov', 'ppl', 'pre', 'pro', 'ps', 'pun', 'put',
+    'que', 'quo', 'ran', 'rap', 'rat', 'raw', 'ray', 'red', 'ref', 'rev',
+    'rfa', 'rfc', 'rid', 'rip', 'rob', 'ron', 'rot', 'row', 'roy', 'run',
+    'sad', 'sam', 'san', 'sat', 'saw', 'say', 'sea', 'see', 'sep', 'set',
+    'sex', 'she', 'sic', 'sig', 'sin', 'sir', 'sit', 'six', 'sky', 'so',
+    'son', 'spi', 'sub', 'sue', 'sum', 'sun', 'tab', 'tad', 'tag', 'tax',
+    'tea', 'ted', 'teh', 'ten', 'tfd', 'the', 'tho', 'thx', 'tie', 'tim',
+    'tip', 'to', 'tom', 'ton', 'too', 'top', 'toy', 'try', 'tv', 'two',
+    'u.s', 'ugh', 'uk', 'umm', 'up', 'ups', 'ur', 'url', 'us', 'usa',
+    'use', 'utc', 'van', 'vfd', 'via', 'vol', 'von', 'vs', 'vs.', 'war',
+    'was', 'wat', 'way', 'we', 'web', 'wee', 'wet', 'who', 'why', 'win',
+    'wit', 'won', 'wow', 'wtf', 'ww2', 'wwe', 'xxx', 'yay', 'yea', 'yep',
+    'yes', 'yet', 'yo', 'you', 'yup',
+}
