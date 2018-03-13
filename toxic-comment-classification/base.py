@@ -10,7 +10,6 @@ from numpy.random import RandomState
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 from tqdm import tqdm
-from tensorboardX import SummaryWriter
 
 import torch
 from torch import nn, optim, autograd
@@ -23,6 +22,9 @@ import preprocessing
 
 
 logger = logging.getLogger(__name__)
+
+
+RANDOM_SEED = 71785514
 
 
 class CommentsDataset(Dataset):
@@ -41,46 +43,76 @@ class CommentsDataset(Dataset):
 
 class BaseModel(object):
 
-    def __init__(self, name, params, random_seed, debug=False):
+    def __init__(self, name, params, random_seed):
         self.name = name
         self.params = params
         self.random_seed = random_seed
-        self.debug = debug
 
         self.output_dir = os.path.join(
             common.OUTPUT_DIR,
-            self.name,
-            str(self.random_seed),
+            self.name, str(self.random_seed),
             common.params_str(self.params))
         if not os.path.isdir(self.output_dir):
             os.makedirs(self.output_dir)
-
-        if self.debug:
-            self.writer = SummaryWriter(self.output_dir)
-
-        self.model_output = os.path.join(self.output_dir, 'model.pickle')
-        self.train_output = os.path.join(self.output_dir, 'train.csv')
-        self.validation_output = os.path.join(self.output_dir, 'validation.csv')
-        self.test_output = os.path.join(self.output_dir, 'test.csv')
 
     def main(self):
         t_start = datetime.now()
         logger.info(' {} / {} '.format(self.name, self.random_seed).center(62, '='))
         logger.info('Hyperparameters:\n{}'.format(pprint.pformat(self.params)))
-        if os.path.isfile(self.test_output):
+        if os.path.isfile(os.path.join(self.output_dir, 'test.csv')):
             logger.info('Output already exists - skipping')
             return
 
+        # Initialize the random number generator
         self.random_state = RandomState(self.random_seed)
         np.random.seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
         torch.manual_seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
 
         preprocessed_data = preprocessing.load(self.params)
         self.fields, self.vocab = self.build_fields_and_vocab(preprocessed_data)
-        self.train(preprocessed_data)
-        self.predict(preprocessed_data)
 
-        logger.info('Elapsed time - {}'.format(datetime.now() - t_start))
+        train_df = common.load_data('train')
+        train_df['text'] = train_df['id'].map(preprocessed_data)
+        test_df = common.load_data('test')
+        test_df['text'] = test_df['id'].map(preprocessed_data)
+
+        folds = common.stratified_kfold(train_df, random_seed=self.random_seed)
+        for fold_num, train_ids, val_ids in folds:
+            logger.info(f'Fold #{fold_num}')
+
+            fold_train_df = train_df[train_df['id'].isin(train_ids)]
+            fold_val_df = train_df[train_df['id'].isin(val_ids)]
+            model = self.train(fold_num, fold_train_df, fold_val_df)
+
+            logger.info('Generating the out-of-fold predictions')
+            path = os.path.join(self.output_dir, f'fold{fold_num}_validation.csv')
+            self.predict(model, fold_val_df, path)
+
+            logger.info('Generating the test predictions')
+            path = os.path.join(self.output_dir, f'fold{fold_num}_test.csv')
+            self.predict(model, test_df, path)
+
+        logger.info('Combining the out-of-fold predictions')
+        df_parts = []
+        for fold_num in range(1, 11):
+            path = os.path.join(self.output_dir, f'fold{fold_num}_validation.csv')
+            df_part = pd.read_csv(path, usecols=['id'] + common.LABELS)
+            df_parts.append(df_part)
+        train_pred = pd.concat(df_parts)
+        path = os.path.join(self.output_dir, 'train.csv')
+        train_pred.to_csv(path, index=False)
+
+        logger.info('Averaging the test predictions')
+        df_parts = []
+        for fold_num in range(1, 11):
+            path = os.path.join(self.output_dir, f'fold{fold_num}_test.csv')
+            df_part = pd.read_csv(path, usecols=['id'] + common.LABELS)
+            df_parts.append(df_part)
+        test_pred = pd.concat(df_parts).groupby('id', as_index=False).mean()
+        path = os.path.join(self.output_dir, 'test.csv')
+        test_pred.to_csv(path, index=False)
+
+        logger.info('Total elapsed time - {}'.format(datetime.now() - t_start))
 
     def build_fields_and_vocab(self, preprocessed_data):
         text_field = Field(pad_token='<PAD>', unk_token=None, batch_first=True, include_lengths=True)
@@ -89,8 +121,8 @@ class BaseModel(object):
 
         # Build the vocabulary
         datasets = []
-        for dataset in ['train', 'validation', 'test']:
-            df = common.load_data(self.random_seed, dataset)
+        for dataset in ['train', 'test']:
+            df = common.load_data(dataset)
             df['text'] = df['id'].map(preprocessed_data)
             datasets.append(CommentsDataset(df, fields))
         text_field.build_vocab(*datasets)
@@ -115,13 +147,13 @@ class BaseModel(object):
 
         return fields, vocab
 
-    def train(self, preprocessed_data):
-        train_iter = self.build_train_iterator(preprocessed_data)
-        _, val_iter = self.build_prediction_iterator(preprocessed_data, 'validation')
+    def train(self, fold_num, train_df, val_df):
+        train_iter = self.build_train_iterator(train_df)
+        _, val_iter = self.build_prediction_iterator(val_df)
         logger.info('Training on {:,} examples, validating on {:,} examples'
                     .format(len(train_iter.dataset), len(val_iter.dataset)))
 
-        # Train the model keeping the word embeddings fixed until the validation AUC
+        # Train the model keeping the word embeddings frozen until the validation AUC
         # stops improving, then unfreeze the embeddings and fine-tune the entire
         # model with a lower learning rate. Use SGD with warm restarts.
         model = self.build_model()
@@ -132,7 +164,7 @@ class BaseModel(object):
         run = epoch = 0
         lr_max = self.params['lr_high']
         optimizer = optim.SGD(parameters, lr=lr_max, momentum=0.9)
-        t_max = 1
+        t_max = 10
         best_val_auc = 0
 
         while True:
@@ -169,26 +201,20 @@ class BaseModel(object):
 
                 # https://arxiv.org/abs/1212.0901
                 # logger.info('Average norm of the gradient - {:.6f}'.format(np.mean(grad_norms)))
-                if self.debug:
-                    auc = self.evaluate_model(model, train_iter)
-                    val_auc = self.evaluate_model(model, val_iter)
-                    self.writer.add_scalars('auc', {'train': auc, 'validation': val_auc}, epoch)
 
             # Run ended - evaluate early stopping
             val_auc = self.evaluate_model(model, val_iter)
             if val_auc > best_val_auc:
                 logger.info('Saving best model - val_auc {:.6f}'.format(val_auc))
-                self.save_model(model)
+                self.save_model(fold_num, model)
                 best_val_auc = val_auc
-                # Double the number of epochs for the next run
-                t_max = min(2 * t_max, 16)
             else:
                 logger.info('Stopping - val_auc {:.6f}'.format(val_auc))
                 if self.params['lr_low'] == 0 or model.embedding.weight.requires_grad:
-                    # Fine-tuning not needed or it just finished
+                    # Fine-tuning disabled or it just finished
                     break
                 else:
-                    model = self.load_model()
+                    model = self.load_model(fold_num)
                     model.embedding.weight.requires_grad = True
                     parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
                     model_size = sum([np.prod(p.size()) for p in parameters])
@@ -200,24 +226,27 @@ class BaseModel(object):
                     t_max = 1
 
         logger.info('Final model - best_val_auc {:.6f}'.format(best_val_auc))
+        model = self.load_model(fold_num)
+        return model
 
-    def predict(self, preprocessed_data):
-        model = self.load_model()
-        for dataset in ['train', 'validation', 'test']:
-            csv_file = (self.train_output if dataset == 'train' else
-                        self.validation_output if dataset == 'validation' else
-                        self.test_output)
-            logger.info('Generating {} predictions'.format(dataset))
-            pred_id, pred_iter = self.build_prediction_iterator(preprocessed_data, dataset)
-            output = self.predict_model(model, pred_iter)
-            predictions = pd.DataFrame(output, columns=common.LABELS)
-            predictions.insert(0, 'id', pred_id)
-            predictions.to_csv(csv_file, index=False)
+    def predict(self, model, df, output_path):
+        model.eval()
+        predictions = []
+        pred_id, pred_iter = self.build_prediction_iterator(df)
+        for batch in pred_iter:
+            (text, text_lengths), _ = batch.text, batch.labels
+            output = model(text, text_lengths)
+            predictions.append(output.data.cpu())
+        predictions = torch.cat(predictions).numpy()
 
-    def build_train_iterator(self, preprocessed_data):
+        predictions = pd.DataFrame(predictions, columns=common.LABELS)
+        predictions.insert(0, 'id', pred_id)
+        predictions.to_csv(output_path, index=False)
+
+    def build_train_iterator(self, df):
         raise NotImplementedError
 
-    def build_prediction_iterator(self, preprocessed_data, dataset):
+    def build_prediction_iterator(self, df):
         raise NotImplementedError
 
     def build_model(self):
@@ -245,22 +274,14 @@ class BaseModel(object):
         auc = roc_auc_score(labels, predictions, average='macro')
         return auc
 
-    def predict_model(self, model, batch_iter):
-        model.eval()
-        predictions = []
-        for batch in batch_iter:
-            (text, text_lengths), _ = batch.text, batch.labels
-            output = model(text, text_lengths)
-            predictions.append(output.data.cpu())
-        predictions = torch.cat(predictions).numpy()
-        return predictions
+    def save_model(self, fold_num, model):
+        path = os.path.join(self.output_dir, f'fold{fold_num}.pickle')
+        torch.save(model.state_dict(), path)
 
-    def save_model(self, model):
-        torch.save(model.state_dict(), self.model_output)
-
-    def load_model(self):
+    def load_model(self, fold_num):
         model = self.build_model()
-        model.load_state_dict(torch.load(self.model_output))
+        path = os.path.join(self.output_dir, f'fold{fold_num}.pickle')
+        model.load_state_dict(torch.load(path))
         return model
 
 

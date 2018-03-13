@@ -8,24 +8,28 @@ from datetime import datetime
 
 import numpy as np
 from numpy.random import RandomState
-from scipy.stats import rankdata
 from sklearn.metrics import roc_auc_score
 import pandas as pd
 import torch
 from torch import nn, optim, autograd
 import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
-from tensorboardX import SummaryWriter
 
 import common
 import base
-from bagging import Bagging
+from rnn import RNN
+from cnn import CNN
+from mlp import MLP
+from xgb import XGB
 
 
 logger = logging.getLogger(__name__)
 
 
-class ScoreModule(nn.Module):
+RANDOM_SEED = 3468526
+
+
+class StackingModule(nn.Module):
 
     def __init__(self, input_size, hidden_units_factor, hidden_layers, hidden_nonlinearily,
                  input_dropout=0, hidden_dropout=0):
@@ -33,7 +37,7 @@ class ScoreModule(nn.Module):
 
         self.dense = base.Dense(
             input_size, 1,
-            output_nonlinearity=None,
+            output_nonlinearity='sigmoid',
             hidden_layers=[hidden_units_factor * input_size] * hidden_layers,
             hidden_nonlinearity=hidden_nonlinearily,
             input_dropout=input_dropout,
@@ -45,10 +49,57 @@ class ScoreModule(nn.Module):
 
 class Stacking(object):
 
-    def __init__(self, params, random_seed, debug=False):
+    model_cls = {'rnn': RNN, 'cnn': CNN, 'mlp': MLP, 'xgb': XGB}
+
+    model_params = {
+        'rnn': {
+            'vocab_size': 30000,
+            'max_len': 300,
+            'vectors': 'glove.42B.300d',
+            'rnn_size': 500,
+            'rnn_dropout': 0.2,
+            'dense_layers': 1,
+            'dense_dropout': 0.5,
+            'batch_size': 128,
+            'lr_high': 0.5,
+            'lr_low': 0.01,
+        },
+        'cnn': {
+            'vocab_size': 50000,
+            'max_len': 400,
+            'vectors': 'glove.42B.300d',
+            'conv_blocks': 1,
+            'conv_dropout': 0.1,
+            'dense_layers': 1,
+            'dense_dropout': 0.5,
+            'batch_size': 256,
+            'lr_high': 0.01,
+            'lr_low': 0.001,
+        },
+        'mlp': {
+            'vocab_size': 100000,
+            'max_len': 600,
+            'vectors': 'glove.42B.300d',
+            'hidden_layers': 2,
+            'hidden_units': 600,
+            'input_dropout': 0.1,
+            'hidden_dropout': 0.5,
+            'batch_size': 512,
+            'lr_high': 0.3,
+            'lr_low': 0.1,
+        },
+        'xgb': {
+            'vocab_size': 300000,
+            'max_len': 1000,
+            'min_df': 5,
+            'learning_rate': 0.1,
+            'max_depth': 6,
+        },
+    }
+
+    def __init__(self, params, random_seed):
         self.params = params
         self.random_seed = random_seed
-        self.debug = debug
 
         self.output_dir = os.path.join(
             common.OUTPUT_DIR,
@@ -57,16 +108,11 @@ class Stacking(object):
         if not os.path.isdir(self.output_dir):
             os.makedirs(self.output_dir)
 
-        if self.debug:
-            self.writer = SummaryWriter(self.output_dir)
-
-        self.test_output = os.path.join(self.output_dir, 'test.csv')
-
     def main(self):
         t_start = datetime.now()
         logger.info(' stacking / {} '.format(self.random_seed).center(62, '='))
         logger.info('Hyperparameters:\n{}'.format(pprint.pformat(self.params)))
-        if os.path.isfile(self.test_output):
+        if os.path.isfile(os.path.join(self.output_dir, 'test.csv')):
             logger.info('Output already exists - skipping')
             return
 
@@ -74,114 +120,132 @@ class Stacking(object):
         np.random.seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
         torch.manual_seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
 
-        input_models = self.load_input_models()
-        val_set = set(common.load_data(self.random_seed, 'validation')['id'].values)
+        test_df = common.load_data('test')
+        train_df = common.load_data('train')
 
-        predictions = []
-        for label, ids, X, y in self.load_data(input_models, 'train'):
-            # Split into training and validation
-            ids_train, ids_val = [], []
-            X_train, X_val = [], []
-            y_train, y_val = [], []
-            for i in range(len(ids)):
-                if ids[i] in val_set:
-                    ids_val.append(ids[i])
-                    X_val.append(X[i])
-                    y_val.append(y[i])
-                else:
-                    ids_train.append(ids[i])
-                    X_train.append(X[i])
-                    y_train.append(y[i])
-            X_train = np.array(X_train)
-            X_val = np.array(X_val)
-            y_train = np.array(y_train)
-            y_val = np.array(y_val)
+        folds = common.stratified_kfold(train_df, random_seed=self.random_seed)
+        for fold_num, train_ids, val_ids in folds:
+            logger.info(f'Fold #{fold_num}')
 
-            logger.info('Training the %s model', label)
-            self.train(label, X_train, y_train, X_val, y_val)
+            val_predictions = []
+            test_predictions = []
 
-            logger.info('Generating validation predictions for the %s model', label)
-            model = self.load_model(label, X.shape[1])
-            y_model = self.predict(model, X_val)
-            predictions.append(pd.DataFrame({'id': ids_val, label: y_model}))
+            for label in common.LABELS:
+                logger.info('Loading the training and validation data for the %s model', label)
+                X_train = self.load_inputs(label, train_ids, 'train')
+                X_val = self.load_inputs(label, val_ids, 'train')
+                y_train = train_df.loc[train_df['id'].isin(train_ids)].sort_values('id')
+                y_train = y_train[label].values
+                y_val = train_df[train_df['id'].isin(val_ids)].sort_values('id')
+                y_val = y_val[label].values
 
-        predictions = functools.reduce(lambda l, r: pd.merge(l, r, on='id'), predictions)
-        predictions = predictions[['id'] + common.LABELS]
-        predictions.to_csv(os.path.join(self.output_dir, 'validation.csv'), index=False)
+                logger.info('Training the %s model', label)
+                model = self.train(fold_num, label, X_train, y_train, X_val, y_val)
 
-        predictions = []
-        for label, ids, X in self.load_data(input_models, 'test'):
-            logger.info('Generating test predictions for the %s model', label)
-            model = self.load_model(label, X.shape[1])
-            y_model = self.predict(model, X)
-            predictions.append(pd.DataFrame({'id': ids, label: y_model}))
+                logger.info('Generating the out-of-fold predictions')
+                y_model = self.predict(model, X_val)
+                val_predictions.append(pd.DataFrame({'id': sorted(list(val_ids)), label: y_model}))
 
-        predictions = functools.reduce(lambda l, r: pd.merge(l, r, on='id'), predictions)
-        predictions = predictions[['id'] + common.LABELS]
-        predictions.to_csv(os.path.join(self.output_dir, 'test.csv'), index=False)
+                logger.info('Generating the test predictions')
+                X_test = self.load_inputs(label, test_df['id'].values, 'test')
+                y_model = self.predict(model, X_test)
+                test_predictions.append(pd.DataFrame({'id': test_df['id'], label: y_model}))
+
+            val_predictions = functools.reduce(lambda l, r: pd.merge(l, r, on='id'), val_predictions)
+            val_predictions = val_predictions[['id'] + common.LABELS]
+            path = os.path.join(self.output_dir, f'fold{fold_num}_validation.csv')
+            val_predictions.to_csv(path, index=False)
+
+            test_predictions = functools.reduce(lambda l, r: pd.merge(l, r, on='id'), test_predictions)
+            test_predictions = test_predictions[['id'] + common.LABELS]
+            path = os.path.join(self.output_dir, f'fold{fold_num}_test.csv')
+            test_predictions.to_csv(path, index=False)
+
+        logger.info('Combining the out-of-fold predictions')
+        df_parts = []
+        for fold_num in range(1, 11):
+            path = os.path.join(self.output_dir, f'fold{fold_num}_validation.csv')
+            df_part = pd.read_csv(path, usecols=['id'] + common.LABELS)
+            df_parts.append(df_part)
+        train_pred = pd.concat(df_parts)
+        path = os.path.join(self.output_dir, 'train.csv')
+        train_pred.to_csv(path, index=False)
+
+        logger.info('Averaging the test predictions')
+        df_parts = []
+        for fold_num in range(1, 11):
+            path = os.path.join(self.output_dir, f'fold{fold_num}_test.csv')
+            df_part = pd.read_csv(path, usecols=['id'] + common.LABELS)
+            df_parts.append(df_part)
+        test_pred = pd.concat(df_parts).groupby('id', as_index=False).mean()
+        path = os.path.join(self.output_dir, 'test.csv')
+        test_pred.to_csv(path, index=False)
 
         logger.info('Elapsed time - {}'.format(datetime.now() - t_start))
 
+    def load_inputs(self, label, ids, dataset):
+        X = []
+        for name in self.params['models']:
+            model = self.model_cls[name](name, self.model_params[name], random_seed=base.RANDOM_SEED)
+            df = pd.read_csv(os.path.join(model.output_dir, f'{dataset}.csv'))
+            df = df[df['id'].isin(ids)]
+            df = df[['id'] + common.LABELS].sort_values('id')
+            if self.params['input'] == 'single':
+                values = np.expand_dims(df[label].values, -1)
+            elif self.params['input'] == 'all':
+                values = df[common.LABELS].values
+            X.append(values)
+        X = np.hstack(X)
+        return X
+
     def build_model(self, input_size):
-        model = ScoreModule(
+        model = StackingModule(
             input_size=input_size,
             hidden_units_factor=self.params['hidden_units_factor'],
             hidden_layers=self.params['hidden_layers'],
-            hidden_nonlinearily=self.params['hidden_nonlinearily'],
+            hidden_nonlinearily='relu',
             input_dropout=self.params['input_dropout'],
             hidden_dropout=self.params['hidden_dropout'])
         if torch.cuda.is_available():
             model = model.cuda()
         return model
 
-    def train(self, label, X_train, y_train, X_val, y_val):
-        positives = np.where(y_train == 1)[0]
-        negatives = np.where(y_train == 0)[0]
-        logger.info('There are {:,} positive and {:,} negative examples'
-                    .format(positives.shape[0], negatives.shape[0]))
-
+    def train(self, fold_num, label, X_train, y_train, X_val, y_val):
         model = self.build_model(X_train.shape[1])
         parameters = list(model.parameters())
         model_size = sum([np.prod(p.size()) for p in parameters])
         logger.info('Optimizing {:,} parameters:\n{}'.format(model_size, model))
-        optimizer = optim.Adam(parameters, lr=self.params['lr'],
-                               weight_decay=self.params['weight_decay'])
+        optimizer = optim.Adam(parameters, lr=self.params['lr'])
+
+        dataset = TensorDataset(torch.FloatTensor(X_train), torch.FloatTensor(y_train))
+        loader = DataLoader(dataset, batch_size=self.params['batch_size'], shuffle=True)
 
         best_val_auc = 0
         patience_count = 0
-        for iteration in itertools.count(start=1):
-            # BPR: Bayesian Personalized Ranking from Implicit Feedback
-            # https://arxiv.org/pdf/1205.2618.pdf
-            model.train()
-            optimizer.zero_grad()
-            pos_indices = self.random_state.choice(positives, self.params['batch_size'])
-            neg_indices = self.random_state.choice(negatives, self.params['batch_size'])
-            pos_input = autograd.Variable(torch.FloatTensor(X_train[pos_indices]))
-            neg_input = autograd.Variable(torch.FloatTensor(X_train[neg_indices]))
-            if torch.cuda.is_available():
-                pos_input = pos_input.cuda()
-                neg_input = neg_input.cuda()
-            pos_scores = model(pos_input)
-            neg_scores = model(neg_input)
-            loss = (-F.logsigmoid(pos_scores - neg_scores)).mean()
-            loss.backward()
-            optimizer.step()
+        for epoch in itertools.count(start=1):
+            for X_batch, y_batch in loader:
+                X_batch = autograd.Variable(X_batch).float()
+                y_batch = autograd.Variable(y_batch).float()
+                if torch.cuda.is_available():
+                    X_batch = X_batch.cuda()
+                    y_batch = y_batch.cuda()
 
-            model.eval()
+                model.train()
+                optimizer.zero_grad()
+                output = model(X_batch).squeeze(-1)
+                loss = F.binary_cross_entropy(output, y_batch)
+                loss.backward()
+                optimizer.step()
+
             y_model = self.predict(model, X_val)
             val_auc = roc_auc_score(y_val, y_model)
-            logger.info('Iteration {} - loss {:.6f} - val_auc {:.6f}'
-                        .format(iteration, loss.data[0], val_auc))
 
-            if self.debug:
-                y_model = self.predict(model, X_train)
-                auc = roc_auc_score(y_train, y_model)
-                self.writer.add_scalars(f'{label}/auc', {'train': auc, 'validation': val_auc}, iteration)
-                self.writer.add_scalar(f'{label}/loss', loss.data[0], iteration)
+            logger.info('Epoch {} - loss {:.6f} - val_auc {:.6f}'
+                        .format(epoch, loss.data[0], val_auc))
 
             if val_auc > best_val_auc:
                 logger.info('Saving best model - val_auc {:.6f}'.format(val_auc))
-                self.save_model(model, label)
+                self.save_model(fold_num, label, model)
                 best_val_auc = val_auc
                 patience_count = 0
             else:
@@ -190,13 +254,16 @@ class Stacking(object):
                     logger.info('Finished training the %s model', label)
                     break
 
-    def save_model(self, model, label):
-        model_file = os.path.join(self.output_dir, '{}.pickle'.format(label))
+        model = self.load_model(fold_num, label, X_train.shape[1])
+        return model
+
+    def save_model(self, fold_num, label, model):
+        model_file = os.path.join(self.output_dir, f'fold{fold_num}_{label}.pickle')
         torch.save(model.state_dict(), model_file)
 
-    def load_model(self, label, input_size):
+    def load_model(self, fold_num, label, input_size):
         model = self.build_model(input_size)
-        model_file = os.path.join(self.output_dir, '{}.pickle'.format(label))
+        model_file = os.path.join(self.output_dir, f'fold{fold_num}_{label}.pickle')
         model.load_state_dict(torch.load(model_file))
         return model
 
@@ -211,59 +278,20 @@ class Stacking(object):
                 x = x.cuda()
             batch_scores = model(x)
             scores.extend(batch_scores.data.tolist())
-        scores = rankdata(scores, method='min') / len(scores)
-        return scores
-
-    def load_input_models(self):
-        models = []
-        for name in self.params['models']:
-            model = Bagging(name)
-            # model.main()
-            models.append(model)
-        return models
-
-    def load_data(self, input_models, dataset):
-        model = input_models[0]
-        csv_file = model.train_output if dataset == 'train' else model.test_output
-        df = pd.read_csv(csv_file, usecols=['id']).sort_values('id')
-        ids = df['id']
-
-        for label in common.LABELS:
-            logger.info('Loading the %s data for the %s model', dataset, label)
-            X = []
-            for model in input_models:
-                df = pd.read_csv(model.train_output if dataset == 'train' else model.test_output)
-                df = df[['id'] + common.LABELS].sort_values('id')
-                if self.params['input'] == 'single':
-                    values = np.expand_dims(df[label].values, -1)
-                elif self.params['input'] == 'all':
-                    values = df[common.LABELS].values
-                # Calculate the normalized ranks
-                for i in range(values.shape[1]):
-                    values[:, i] = rankdata(values[:, i], method='min') / values.shape[0]
-                X.append(values)
-            X = np.hstack(X)
-            if dataset == 'train':
-                df = pd.read_csv(os.path.join(common.DATA_DIR, 'train.csv'), usecols=['id', label])
-                y = df.sort_values('id')[label].values
-                yield label, ids, X, y
-            else:
-                yield label, ids, X
+        return np.array(scores).flatten()
 
 
 if __name__ == '__main__':
     params = {
         'input': 'all',
         'models': ['rnn', 'cnn', 'mlp', 'xgb'],
-        'hidden_layers': 2,
+        'hidden_layers': 3,
         'hidden_units_factor': 3,
-        'hidden_nonlinearily': 'relu',
         'input_dropout': 0.0,
-        'hidden_dropout': 0.3,
-        'lr': 0.01,
-        'weight_decay': 1e-4,
-        'batch_size': 256,
+        'hidden_dropout': 0.5,
+        'lr': 0.005,
+        'batch_size': 512,
         'patience': 10,
     }
-    model = Stacking(params, random_seed=42, debug=False)
+    model = Stacking(params, random_seed=RANDOM_SEED)
     model.main()

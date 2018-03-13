@@ -4,6 +4,7 @@ import pprint
 import logging
 import multiprocessing as mp
 from collections import defaultdict
+from datetime import datetime
 
 import numpy as np
 from numpy.random import RandomState
@@ -22,39 +23,75 @@ logger = logging.getLogger(__name__)
 
 
 def scoring(estimator, X, y):
-    try:
-        y_predict = estimator.predict_proba(X, ntree_limit=estimator.best_ntree_limit)
-    except AttributeError:
-        y_predict = estimator.predict_proba(X)
+    best_n_tree_limit = getattr(estimator, 'best_n_tree_limit', None)
+    y_predict = estimator.predict_proba(X, ntree_limit=best_ntree_limit)
     return roc_auc_score(y, y_predict[:, 1])
 
 
 class XGB(base.BaseModel):
 
     def __init__(self, name, params, random_seed):
-        super().__init__(name, params, random_seed, debug=False)
+        super().__init__(name, params, random_seed)
 
     def main(self):
+        t_start = datetime.now()
         logger.info(' {} / {} '.format(self.name, self.random_seed).center(62, '='))
         logger.info('Hyperparameters:\n{}'.format(pprint.pformat(self.params)))
-        if os.path.isfile(self.validation_output):
+        if os.path.isfile(os.path.join(self.output_dir, 'test.csv')):
             logger.info('Output already exists - skipping')
-        else:
-            self.random_state = RandomState(self.random_seed)
-            np.random.seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
-            preprocessed_data = preprocessing.load(self.params)
-            self.train(preprocessed_data)
-            self.predict(preprocessed_data)
 
-    def train(self, preprocessed_data):
+        # Initialize the random number generator
+        self.random_state = RandomState(self.random_seed)
+        np.random.seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
+
+        preprocessed_data = preprocessing.load(self.params)
         vectorizer = self.build_vectorizer(preprocessed_data)
 
-        train_df = common.load_data(self.random_seed, 'train')
+        train_df = common.load_data('train')
         train_df['text'] = train_df['id'].map(preprocessed_data)
-        X_train = vectorizer.transform(train_df['text'])
+        test_df = common.load_data('test')
+        test_df['text'] = test_df['id'].map(preprocessed_data)
 
-        val_df = common.load_data(self.random_seed, 'validation')
-        val_df['text'] = val_df['id'].map(preprocessed_data)
+        folds = common.stratified_kfold(train_df, random_seed=self.random_seed)
+        for fold_num, train_ids, val_ids in folds:
+            logger.info(f'Fold #{fold_num}')
+
+            fold_train_df = train_df[train_df['id'].isin(train_ids)]
+            fold_val_df = train_df[train_df['id'].isin(val_ids)]
+            models = self.train(fold_num, vectorizer, fold_train_df, fold_val_df)
+
+            logger.info('Generating the out-of-fold predictions')
+            path = os.path.join(self.output_dir, f'fold{fold_num}_validation.csv')
+            self.predict(models, vectorizer, fold_val_df, path)
+
+            logger.info('Generating the test predictions')
+            path = os.path.join(self.output_dir, f'fold{fold_num}_test.csv')
+            self.predict(models, vectorizer, test_df, path)
+
+        logger.info('Combining the out-of-fold predictions')
+        df_parts = []
+        for fold_num in range(1, 11):
+            path = os.path.join(self.output_dir, f'fold{fold_num}_validation.csv')
+            df_part = pd.read_csv(path, usecols=['id'] + common.LABELS)
+            df_parts.append(df_part)
+        train_pred = pd.concat(df_parts)
+        path = os.path.join(self.output_dir, 'train.csv')
+        train_pred.to_csv(path, index=False)
+
+        logger.info('Averaging the test predictions')
+        df_parts = []
+        for fold_num in range(1, 11):
+            path = os.path.join(self.output_dir, f'fold{fold_num}_test.csv')
+            df_part = pd.read_csv(path, usecols=['id'] + common.LABELS)
+            df_parts.append(df_part)
+        test_pred = pd.concat(df_parts).groupby('id', as_index=False).mean()
+        path = os.path.join(self.output_dir, 'test.csv')
+        test_pred.to_csv(path, index=False)
+
+        logger.info('Total elapsed time - {}'.format(datetime.now() - t_start))
+
+    def train(self, fold_num, vectorizer, train_df, val_df):
+        X_train = vectorizer.transform(train_df['text'])
         X_val = vectorizer.transform(val_df['text'])
 
         models = {}
@@ -79,27 +116,21 @@ class XGB(base.BaseModel):
 
             models[label] = model
 
-        joblib.dump((vectorizer, models), self.model_output)
+        path = os.path.join(self.output_dir, f'fold{fold_num}.pickle')
+        joblib.dump((vectorizer, models), path)
+        return models
 
-    def predict(self, preprocessed_data):
-        vectorizer, models = joblib.load(self.model_output)
-        for dataset in ['train', 'validation', 'test']:
-            csv_file = (self.train_output if dataset == 'train' else
-                        self.validation_output if dataset == 'validation' else
-                        self.test_output)
-            logger.info('Generating {} predictions'.format(dataset))
-            df = common.load_data(self.random_seed, dataset)
-            df['text'] = df['id'].map(preprocessed_data)
-            X = vectorizer.transform(df['text'])
-            output = defaultdict(list)
-            for label in common.LABELS:
-                model = models[label]
-                yhat = model.predict_proba(X, ntree_limit=model.best_ntree_limit)[:, 1]
-                output[label].extend(yhat)
-            predictions = pd.DataFrame.from_dict(output)
-            predictions = predictions[common.LABELS]
-            predictions.insert(0, 'id', df['id'].values)
-            predictions.to_csv(csv_file, index=False)
+    def predict(self, models, vectorizer, df, output_path):
+        X = vectorizer.transform(df['text'])
+        output = defaultdict(list)
+        for label in common.LABELS:
+            model = models[label]
+            yhat = model.predict_proba(X, ntree_limit=model.best_ntree_limit)[:, 1]
+            output[label].extend(yhat)
+        predictions = pd.DataFrame.from_dict(output)
+        predictions = predictions[common.LABELS]
+        predictions.insert(0, 'id', df['id'].values)
+        predictions.to_csv(output_path, index=False)
 
     def build_vectorizer(self, preprocessed_data):
         logger.info('Learning the vocabulary')
@@ -118,5 +149,5 @@ if __name__ == '__main__':
         'learning_rate': 0.1,
         'max_depth': 6,
     }
-    model = XGB('xgb', params, random_seed=42)
+    model = XGB('xgb', params, random_seed=base.RANDOM_SEED)
     model.main()

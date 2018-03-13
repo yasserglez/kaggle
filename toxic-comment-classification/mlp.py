@@ -31,24 +31,19 @@ class MLPModule(base.BaseModule):
 
 class MLP(base.BaseModel):
 
-    def build_train_iterator(self, preprocessed_data):
-        df = common.load_data(self.random_seed, 'train')
-        df['text'] = df['id'].map(preprocessed_data)
+    def build_train_iterator(self, df):
         dataset = base.CommentsDataset(df, self.fields)
         train_iter = Iterator(
-            dataset, batch_size=self.params['batch_size'], repeat=False,
-            device=None if torch.cuda.is_available() else -1)
+            dataset, batch_size=self.params['batch_size'],
+            repeat=False, shuffle=True)
         return train_iter
 
-    def build_prediction_iterator(self, preprocessed_data, dataset):
-        df = common.load_data(self.random_seed, dataset)
-        df['text'] = df['id'].map(preprocessed_data)
+    def build_prediction_iterator(self, df):
         dataset = base.CommentsDataset(df, self.fields)
         pred_id = list(df['id'].values)
         pred_iter = Iterator(
             dataset, batch_size=self.params['batch_size'],
-            repeat=False, shuffle=False, sort=False,
-            device=None if torch.cuda.is_available() else -1)
+            repeat=False, shuffle=False, sort=False)
         return pred_id, pred_iter
 
     def build_model(self):
@@ -77,5 +72,5 @@ if __name__ == '__main__':
         'lr_high': 0.3,
         'lr_low': 0.1,
     }
-    model = MLP('mlp', params, random_seed=42)
+    model = MLP('mlp', params, random_seed=base.RANDOM_SEED)
     model.main()

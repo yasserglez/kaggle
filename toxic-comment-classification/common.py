@@ -1,7 +1,8 @@
 import os
 import logging
 
-from numpy.random import RandomState
+import numpy as np
+from sklearn.model_selection import StratifiedKFold
 import pandas as pd
 
 
@@ -10,6 +11,7 @@ logging.basicConfig(
     level=logging.INFO, datefmt='%Y-%m-%d %H:%M:%S')
 
 logger = logging.getLogger(__name__)
+
 
 SRC_DIR = os.path.abspath(os.path.dirname(__file__))
 DATA_DIR = os.path.join(SRC_DIR, 'data')
@@ -38,19 +40,19 @@ def load_raw_data():
     return raw_data
 
 
-def load_data(random_seed, dataset):
-    if dataset in {'train', 'validation'}:
-        random_state = RandomState(random_seed)
-        data = pd.read_csv(os.path.join(DATA_DIR, 'train.csv'), usecols=['id'] + LABELS)
-        train_data, validation_data = split_data(data, test_size=0.25, random_state=random_state)
-        return train_data if dataset == 'train' else validation_data
-    elif dataset == 'test':
-        test_data = pd.read_csv(os.path.join(DATA_DIR, 'test.csv'), usecols=['id'])
-        return test_data
+def load_data(dataset):
+    path = os.path.join(DATA_DIR, f'{dataset}.csv')
+    cols = ['id'] + LABELS if dataset == 'train' else ['id']
+    df = pd.read_csv(path, usecols=cols)
+    return df
 
 
-def split_data(df, test_size, random_state):
-    test_df = df.groupby(LABELS, as_index=False) \
-        .apply(lambda x: x.sample(frac=test_size, random_state=random_state))
-    train_df = df[~df['id'].isin(test_df['id'])]
-    return train_df, test_df
+def stratified_kfold(df, random_seed, k=10):
+    # Assign a unique value to each label combination
+    y = np.sum(df[LABELS].values * (2 ** np.arange(len(LABELS))), axis=1)
+    X = np.zeros_like(y)  # Create a dummy X
+    kfold = StratifiedKFold(n_splits=k, random_state=random_seed)
+    for fold_num, (train_indices, val_indices) in enumerate(kfold.split(X, y), start=1):
+        train_ids = set(df['id'].values[train_indices])
+        val_ids = set(df['id'].values[val_indices])
+        yield fold_num, train_ids, val_ids

@@ -85,16 +85,14 @@ class CNNModule(base.BaseModule):
 
 class CNN(base.BaseModel):
 
-    def build_train_iterator(self, preprocessed_data):
-        df = common.load_data(self.random_seed, 'train')
-        df['text'] = df['id'].map(preprocessed_data)
+    def build_train_iterator(self, df):
         dataset = base.CommentsDataset(df, self.fields)
-        train_iter = Iterator(dataset, batch_size=self.params['batch_size'], repeat=False)
+        train_iter = Iterator(
+            dataset, batch_size=self.params['batch_size'],
+            repeat=False, shuffle=True)
         return train_iter
 
-    def build_prediction_iterator(self, preprocessed_data, dataset):
-        df = common.load_data(self.random_seed, dataset)
-        df['text'] = df['id'].map(preprocessed_data)
+    def build_prediction_iterator(self, df):
         dataset = base.CommentsDataset(df, self.fields)
         pred_id = list(df['id'].values)
         pred_iter = Iterator(
@@ -126,5 +124,5 @@ if __name__ == '__main__':
         'lr_high': 0.01,
         'lr_low': 0.001,
     }
-    model = CNN('cnn', params, random_seed=42)
+    model = CNN('cnn', params, random_seed=base.RANDOM_SEED)
     model.main()

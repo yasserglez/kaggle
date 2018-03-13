@@ -101,18 +101,15 @@ class RNNModule(base.BaseModule):
 
 class RNN(base.BaseModel):
 
-    def build_train_iterator(self, preprocessed_data):
-        df = common.load_data(self.random_seed, 'train')
-        df['text'] = df['id'].map(preprocessed_data)
+    def build_train_iterator(self, df):
         dataset = base.CommentsDataset(df, self.fields)
         train_iter = Iterator(
             dataset, batch_size=self.params['batch_size'],
-            repeat=False, sort_within_batch=True, sort_key=lambda x: len(x.text))
+            repeat=False, sort_within_batch=True, shuffle=True,
+            sort_key=lambda x: len(x.text))
         return train_iter
 
-    def build_prediction_iterator(self, preprocessed_data, dataset):
-        df = common.load_data(self.random_seed, dataset)
-        df['text'] = df['id'].map(preprocessed_data)
+    def build_prediction_iterator(self, df):
         dataset = base.CommentsDataset(df, self.fields)
         # Reorder the examples (required by pack_padded_sequence)
         sort_indices = sorted(range(len(dataset)), key=lambda i: -len(dataset[i].text))
@@ -148,10 +145,10 @@ if __name__ == '__main__':
         'rnn_size': 500,
         'rnn_dropout': 0.2,
         'dense_layers': 1,
-        'dense_dropout': 0.3,
+        'dense_dropout': 0.5,
         'batch_size': 128,
         'lr_high': 0.5,
         'lr_low': 0.01,
     }
-    model = RNN('rnn', params, random_seed=42)
+    model = RNN('rnn', params, random_seed=base.RANDOM_SEED)
     model.main()
