@@ -3,17 +3,15 @@ import sys
 import logging
 import pprint
 import functools
-import itertools
 from datetime import datetime
+import multiprocessing as mp
 
 import numpy as np
 from numpy.random import RandomState
-from sklearn.metrics import roc_auc_score
+from sklearn.utils.class_weight import compute_class_weight
 import pandas as pd
-import torch
-from torch import nn, optim, autograd
-import torch.nn.functional as F
-from torch.utils.data import TensorDataset, DataLoader
+import xgboost as xgb
+import joblib
 
 import common
 import base
@@ -27,24 +25,6 @@ logger = logging.getLogger(__name__)
 
 
 RANDOM_SEED = 3468526
-
-
-class StackingModule(nn.Module):
-
-    def __init__(self, input_size, hidden_units_factor, hidden_layers, hidden_nonlinearily,
-                 input_dropout=0, hidden_dropout=0):
-        super().__init__()
-
-        self.dense = base.Dense(
-            input_size, 1,
-            output_nonlinearity='sigmoid',
-            hidden_layers=[hidden_units_factor * input_size] * hidden_layers,
-            hidden_nonlinearity=hidden_nonlinearily,
-            input_dropout=input_dropout,
-            hidden_dropout=hidden_dropout)
-
-    def forward(self, x):
-        return self.dense(x)
 
 
 class Stacking(object):
@@ -118,7 +98,6 @@ class Stacking(object):
 
         self.random_state = RandomState(self.random_seed)
         np.random.seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
-        torch.manual_seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
 
         test_df = common.load_data('test')
         train_df = common.load_data('train')
@@ -198,100 +177,50 @@ class Stacking(object):
         X = np.hstack(X)
         return X
 
-    def build_model(self, input_size):
-        model = StackingModule(
-            input_size=input_size,
-            hidden_units_factor=self.params['hidden_units_factor'],
-            hidden_layers=self.params['hidden_layers'],
-            hidden_nonlinearily='relu',
-            input_dropout=self.params['input_dropout'],
-            hidden_dropout=self.params['hidden_dropout'])
-        if torch.cuda.is_available():
-            model = model.cuda()
-        return model
-
     def train(self, fold_num, label, X_train, y_train, X_val, y_val):
-        model = self.build_model(X_train.shape[1])
-        parameters = list(model.parameters())
-        model_size = sum([np.prod(p.size()) for p in parameters])
-        logger.info('Optimizing {:,} parameters:\n{}'.format(model_size, model))
-        optimizer = optim.Adam(parameters, lr=self.params['lr'])
 
-        dataset = TensorDataset(torch.FloatTensor(X_train), torch.FloatTensor(y_train))
-        loader = DataLoader(dataset, batch_size=self.params['batch_size'], shuffle=True)
+        model = xgb.XGBClassifier(
+            n_estimators=10000,  # determined by early stopping
+            objective='binary:logistic',
+            max_depth=self.params['max_depth'],
+            min_child_weight=self.params['min_child_weight'],
+            subsample=self.params['subsample'],
+            colsample_bytree=self.params['colsample_bytree'],
+            learning_rate=self.params['learning_rate'],
+            random_state=self.random_seed,
+            n_jobs=mp.cpu_count())
 
-        best_val_auc = 0
-        patience_count = 0
-        for epoch in itertools.count(start=1):
-            for X_batch, y_batch in loader:
-                X_batch = autograd.Variable(X_batch).float()
-                y_batch = autograd.Variable(y_batch).float()
-                if torch.cuda.is_available():
-                    X_batch = X_batch.cuda()
-                    y_batch = y_batch.cuda()
+        model.fit(X_train, y_train, eval_metric='auc',
+                  eval_set=[(X_train, y_train), (X_val, y_val)],
+                  early_stopping_rounds=self.params['patience'])
 
-                model.train()
-                optimizer.zero_grad()
-                output = model(X_batch).squeeze(-1)
-                loss = F.binary_cross_entropy(output, y_batch)
-                loss.backward()
-                optimizer.step()
-
-            y_model = self.predict(model, X_val)
-            val_auc = roc_auc_score(y_val, y_model)
-
-            logger.info('Epoch {} - loss {:.6f} - val_auc {:.6f}'
-                        .format(epoch, loss.data[0], val_auc))
-
-            if val_auc > best_val_auc:
-                logger.info('Saving best model - val_auc {:.6f}'.format(val_auc))
-                self.save_model(fold_num, label, model)
-                best_val_auc = val_auc
-                patience_count = 0
-            else:
-                patience_count += 1
-                if patience_count == self.params['patience']:
-                    logger.info('Finished training the %s model', label)
-                    break
-
-        model = self.load_model(fold_num, label, X_train.shape[1])
+        self.save_model(fold_num, label, model)
         return model
 
     def save_model(self, fold_num, label, model):
         model_file = os.path.join(self.output_dir, f'fold{fold_num}_{label}.pickle')
-        torch.save(model.state_dict(), model_file)
+        joblib.dump(model, model_file)
 
-    def load_model(self, fold_num, label, input_size):
-        model = self.build_model(input_size)
+    def load_model(self, fold_num, label):
         model_file = os.path.join(self.output_dir, f'fold{fold_num}_{label}.pickle')
-        model.load_state_dict(torch.load(model_file))
+        model = joblib.load(model_file)
         return model
 
     def predict(self, model, X):
-        model.eval()
-        dataset = TensorDataset(torch.FloatTensor(X), torch.zeros(X.shape[0]))
-        loader = DataLoader(dataset, batch_size=self.params['batch_size'])
-        scores = []
-        for X_batch, _ in loader:
-            x = autograd.Variable(X_batch)
-            if torch.cuda.is_available():
-                x = x.cuda()
-            batch_scores = model(x)
-            scores.extend(batch_scores.data.tolist())
-        return np.array(scores).flatten()
+        output = model.predict_proba(X, ntree_limit=model.best_ntree_limit)[:, 1]
+        return output
 
 
 if __name__ == '__main__':
     params = {
         'input': 'all',
         'models': ['rnn', 'cnn', 'mlp', 'xgb'],
-        'hidden_layers': 3,
-        'hidden_units_factor': 3,
-        'input_dropout': 0.0,
-        'hidden_dropout': 0.5,
-        'lr': 0.005,
-        'batch_size': 512,
-        'patience': 10,
+        'max_depth': 2,
+        'min_child_weight': 5,
+        'subsample': 0.5,
+        'colsample_bytree': 0.7,
+        'learning_rate': 0.2,
+        'patience': 25,
     }
     model = Stacking(params, random_seed=RANDOM_SEED)
     model.main()
