@@ -10,7 +10,6 @@ import numpy as np
 from numpy.random import RandomState
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics import roc_auc_score
 import xgboost as xgb
 import joblib
 
@@ -20,12 +19,6 @@ import preprocessing
 
 
 logger = logging.getLogger(__name__)
-
-
-def scoring(estimator, X, y):
-    best_n_tree_limit = getattr(estimator, 'best_n_tree_limit', None)
-    y_predict = estimator.predict_proba(X, ntree_limit=best_ntree_limit)
-    return roc_auc_score(y, y_predict[:, 1])
 
 
 class XGB(base.BaseModel):
@@ -98,21 +91,21 @@ class XGB(base.BaseModel):
         for label in common.LABELS:
             logger.info('Training the %s model', label)
             y_train, y_val = train_df[label].values, val_df[label].values
-            scale_pos_weight = (1 - y_train).sum() / y_train.sum()
 
             model = xgb.XGBClassifier(
-                    n_estimators=10000,  # determined by early stopping
-                    max_depth=self.params['max_depth'],
-                    objective='binary:logistic',
-                    learning_rate=self.params['learning_rate'],
-                    scale_pos_weight=scale_pos_weight,
-                    min_child_weight=scale_pos_weight,
-                    random_state=self.random_seed,
-                    n_jobs=mp.cpu_count())
+                n_estimators=10000,  # determined by early stopping
+                objective='binary:logistic',
+                max_depth=self.params['max_depth'],
+                min_child_weight=self.params['min_child_weight'],
+                subsample=self.params['subsample'],
+                colsample_bytree=self.params['colsample_bytree'],
+                learning_rate=self.params['learning_rate'],
+                random_state=self.random_seed,
+                n_jobs=mp.cpu_count())
 
             model.fit(X_train, y_train,
-                      eval_metric='auc', eval_set=[(X_val, y_val)],
-                      early_stopping_rounds=10, verbose=True)
+                      eval_set=[(X_val, y_val)], eval_metric='auc',
+                      early_stopping_rounds=self.params['patience'])
 
             models[label] = model
 
@@ -146,8 +139,12 @@ if __name__ == '__main__':
         'vocab_size': 300000,
         'max_len': 1000,
         'min_df': 5,
-        'learning_rate': 0.1,
         'max_depth': 6,
+        'min_child_weight': 1,
+        'subsample': 0.4,
+        'colsample_bytree': 0.5,
+        'learning_rate': 0.1,
+        'patience': 50,
     }
     model = XGB('xgb', params, random_seed=base.RANDOM_SEED)
     model.main()

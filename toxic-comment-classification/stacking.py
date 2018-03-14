@@ -8,7 +8,6 @@ import multiprocessing as mp
 
 import numpy as np
 from numpy.random import RandomState
-from sklearn.utils.class_weight import compute_class_weight
 import pandas as pd
 import xgboost as xgb
 import joblib
@@ -72,8 +71,12 @@ class Stacking(object):
             'vocab_size': 300000,
             'max_len': 1000,
             'min_df': 5,
-            'learning_rate': 0.1,
             'max_depth': 6,
+            'min_child_weight': 1,
+            'subsample': 0.4,
+            'colsample_bytree': 0.5,
+            'learning_rate': 0.1,
+            'patience': 50,
         },
     }
 
@@ -190,8 +193,8 @@ class Stacking(object):
             random_state=self.random_seed,
             n_jobs=mp.cpu_count())
 
-        model.fit(X_train, y_train, eval_metric='auc',
-                  eval_set=[(X_train, y_train), (X_val, y_val)],
+        model.fit(X_train, y_train,
+                  eval_set=[(X_val, y_val)], eval_metric='auc',
                   early_stopping_rounds=self.params['patience'])
 
         self.save_model(fold_num, label, model)
