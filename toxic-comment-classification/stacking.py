@@ -14,10 +14,12 @@ import joblib
 
 import common
 import base
-from rnn import RNN
-from cnn import CNN
+from lstm import LSTM
+from gru import GRU
+from dpcnn import DPCNN
 from mlp import MLP
 from xgb import XGB
+from ngram import NGram
 
 
 logger = logging.getLogger(__name__)
@@ -28,10 +30,18 @@ RANDOM_SEED = 3468526
 
 class Stacking(object):
 
-    model_cls = {'rnn': RNN, 'cnn': CNN, 'mlp': MLP, 'xgb': XGB}
+    model_cls = {
+        'lstm': LSTM,
+        'gru': GRU,
+        'dpcnn': DPCNN,
+        'mlp': MLP,
+        'xgb': XGB,
+        'char-ngram': NGram,
+        'word-ngram': NGram,
+    }
 
     model_params = {
-        'rnn': {
+        'lstm': {
             'vocab_size': 30000,
             'max_len': 300,
             'vectors': 'glove.42B.300d',
@@ -43,7 +53,22 @@ class Stacking(object):
             'lr_high': 0.5,
             'lr_low': 0.01,
         },
-        'cnn': {
+        'gru': {
+            'vocab_size': 70000,
+            'max_len': 150,
+            'vectors': 'glove.42B.300d',
+            'rnn_size': 500,
+            'rnn_dropout': 0.2,
+            'proj_size': 150,
+            'proj_layers': 0,
+            'proj_dropout': 0.3,
+            'dense_layers': 1,
+            'dense_dropout': 0.5,
+            'batch_size': 128,
+            'lr_high': 0.5,
+            'lr_low': 0.01,
+        },
+        'dpcnn': {
             'vocab_size': 50000,
             'max_len': 400,
             'vectors': 'glove.42B.300d',
@@ -77,6 +102,20 @@ class Stacking(object):
             'colsample_bytree': 0.5,
             'learning_rate': 0.1,
             'patience': 50,
+        },
+        'char-ngram': {
+            'analyzer': 'char',
+            'min_df': 5,
+            'max_ngram': 5,
+            'max_features': 100000,
+            'C': 1.0,
+        },
+        'word-ngram': {
+            'analyzer': 'word',
+            'min_df': 5,
+            'max_ngram': 2,
+            'max_features': 50000,
+            'C': 1.0,
         },
     }
 
@@ -168,7 +207,7 @@ class Stacking(object):
     def load_inputs(self, label, ids, dataset):
         X = []
         for name in self.params['models']:
-            model = self.model_cls[name](name, self.model_params[name], random_seed=base.RANDOM_SEED)
+            model = self.model_cls[name](self.model_params[name], random_seed=base.RANDOM_SEED)
             df = pd.read_csv(os.path.join(model.output_dir, f'{dataset}.csv'))
             df = df[df['id'].isin(ids)]
             df = df[['id'] + common.LABELS].sort_values('id')
@@ -217,7 +256,7 @@ class Stacking(object):
 if __name__ == '__main__':
     params = {
         'input': 'all',
-        'models': ['rnn', 'cnn', 'mlp', 'xgb'],
+        'models': ['lstm', 'dpcnn', 'mlp', 'xgb', 'char-ngram', 'word-ngram'],
         'max_depth': 2,
         'min_child_weight': 5,
         'subsample': 0.5,

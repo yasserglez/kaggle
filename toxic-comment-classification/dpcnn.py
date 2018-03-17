@@ -1,3 +1,5 @@
+# Based on http://ai.tencent.com/ailab/media/publications/ACL3-Brady.pdf
+
 from torch import nn
 import torch.nn.functional as F
 from torchtext.data import Iterator
@@ -49,7 +51,7 @@ class ConvBlock(nn.Module):
         return x
 
 
-class CNNModule(base.BaseModule):
+class DPCNNModule(base.BaseModule):
 
     def __init__(self, vocab, conv_blocks, conv_dropout, dense_layers, dense_nonlinearily, dense_dropout):
         super().__init__(vocab)
@@ -83,7 +85,7 @@ class CNNModule(base.BaseModule):
         return output
 
 
-class CNN(base.BaseModel):
+class DPCNN(base.BaseModel):
 
     def build_train_iterator(self, df):
         dataset = base.CommentsDataset(df, self.fields)
@@ -101,7 +103,7 @@ class CNN(base.BaseModel):
         return pred_id, pred_iter
 
     def build_model(self):
-        model = CNNModule(
+        model = DPCNNModule(
             vocab=self.vocab,
             conv_blocks=self.params['conv_blocks'],
             conv_dropout=self.params['conv_dropout'],
@@ -124,5 +126,5 @@ if __name__ == '__main__':
         'lr_high': 0.01,
         'lr_low': 0.001,
     }
-    model = CNN('cnn', params, random_seed=base.RANDOM_SEED)
+    model = DPCNN(params, random_seed=base.RANDOM_SEED)
     model.main()

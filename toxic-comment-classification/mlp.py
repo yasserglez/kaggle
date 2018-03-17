@@ -72,5 +72,5 @@ if __name__ == '__main__':
         'lr_high': 0.3,
         'lr_low': 0.1,
     }
-    model = MLP('mlp', params, random_seed=base.RANDOM_SEED)
+    model = MLP(params, random_seed=base.RANDOM_SEED)
     model.main()

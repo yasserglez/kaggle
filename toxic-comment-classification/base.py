@@ -35,7 +35,7 @@ class CommentsDataset(Dataset):
         else:
             labels = np.full(df.shape[0], np.nan)
         examples = []
-        for values in zip(df['text'], labels):
+        for values in zip(df['comment_text'], labels):
             example = Example.fromlist(values, fields)
             examples.append(example)
         super().__init__(examples, fields, **kwargs)
@@ -43,8 +43,8 @@ class CommentsDataset(Dataset):
 
 class BaseModel(object):
 
-    def __init__(self, name, params, random_seed):
-        self.name = name
+    def __init__(self, params, random_seed):
+        self.name = self.__class__.__name__.lower()
         self.params = params
         self.random_seed = random_seed
 
@@ -72,9 +72,9 @@ class BaseModel(object):
         self.fields, self.vocab = self.build_fields_and_vocab(preprocessed_data)
 
         train_df = common.load_data('train')
-        train_df['text'] = train_df['id'].map(preprocessed_data)
+        train_df['comment_text'] = train_df['id'].map(preprocessed_data)
         test_df = common.load_data('test')
-        test_df['text'] = test_df['id'].map(preprocessed_data)
+        test_df['comment_text'] = test_df['id'].map(preprocessed_data)
 
         folds = common.stratified_kfold(train_df, random_seed=self.random_seed)
         for fold_num, train_ids, val_ids in folds:
@@ -123,7 +123,7 @@ class BaseModel(object):
         datasets = []
         for dataset in ['train', 'test']:
             df = common.load_data(dataset)
-            df['text'] = df['id'].map(preprocessed_data)
+            df['comment_text'] = df['id'].map(preprocessed_data)
             datasets.append(CommentsDataset(df, fields))
         text_field.build_vocab(*datasets)
         vocab = text_field.vocab
@@ -354,3 +354,37 @@ class Dense(nn.Module):
 
     def forward(self, x):
         return self.dense(x)
+
+
+# Based on https://github.com/salesforce/awd-lstm-lm/blob/master/weight_drop.py
+class WeightDrop(torch.nn.Module):
+
+    def __init__(self, module, weights, dropout=0):
+        super(WeightDrop, self).__init__()
+        self.module = module
+        self.weights = weights
+        self.dropout = dropout
+        self._setup()
+
+    def no_op(*args, **kwargs):
+        return
+
+    def _setup(self):
+        # Temporary solution to an issue regarding compacting weights re: cuDNN RNN
+        if issubclass(type(self.module), torch.nn.RNNBase):
+            self.module.flatten_parameters = self.no_op
+
+        for w_name in self.weights:
+            w = getattr(self.module, w_name)
+            del self.module._parameters[w_name]
+            self.module.register_parameter(w_name + '_raw', nn.Parameter(w.data))
+
+    def _setweights(self):
+        for w_name in self.weights:
+            raw_w = getattr(self.module, w_name + '_raw')
+            w = F.dropout(raw_w, p=self.dropout, training=self.training)
+            setattr(self.module, w_name, w)
+
+    def forward(self, *args):
+        self._setweights()
+        return self.module.forward(*args)

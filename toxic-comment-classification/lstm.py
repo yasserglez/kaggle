@@ -10,41 +10,7 @@ import common
 import base
 
 
-# Based on https://github.com/salesforce/awd-lstm-lm/blob/master/weight_drop.py
-class WeightDrop(torch.nn.Module):
-
-    def __init__(self, module, weights, dropout=0):
-        super(WeightDrop, self).__init__()
-        self.module = module
-        self.weights = weights
-        self.dropout = dropout
-        self._setup()
-
-    def no_op(*args, **kwargs):
-        return
-
-    def _setup(self):
-        # Temporary solution to an issue regarding compacting weights re: cuDNN RNN
-        if issubclass(type(self.module), torch.nn.RNNBase):
-            self.module.flatten_parameters = self.no_op
-
-        for w_name in self.weights:
-            w = getattr(self.module, w_name)
-            del self.module._parameters[w_name]
-            self.module.register_parameter(w_name + '_raw', nn.Parameter(w.data))
-
-    def _setweights(self):
-        for w_name in self.weights:
-            raw_w = getattr(self.module, w_name + '_raw')
-            w = F.dropout(raw_w, p=self.dropout, training=self.training)
-            setattr(self.module, w_name, w)
-
-    def forward(self, *args):
-        self._setweights()
-        return self.module.forward(*args)
-
-
-class RNNModule(base.BaseModule):
+class LSTMModule(base.BaseModule):
 
     def __init__(self, vocab, rnn_size, rnn_layers, rnn_dropout,
                  dense_layers, dense_nonlinearily, dense_dropout):
@@ -70,7 +36,7 @@ class RNNModule(base.BaseModule):
 
         if rnn_dropout:
             weights = ['weight_hh_l{}'.format(k) for k in range(rnn_layers)]
-            self.rnn = WeightDrop(self.rnn, weights, dropout=rnn_dropout)
+            self.rnn = base.WeightDrop(self.rnn, weights, dropout=rnn_dropout)
 
         self.dense = base.Dense(
             2 * rnn_size, len(common.LABELS),
@@ -99,7 +65,7 @@ class RNNModule(base.BaseModule):
         return output
 
 
-class RNN(base.BaseModel):
+class LSTM(base.BaseModel):
 
     def build_train_iterator(self, df):
         dataset = base.CommentsDataset(df, self.fields)
@@ -121,7 +87,7 @@ class RNN(base.BaseModel):
         return pred_id, pred_iter
 
     def build_model(self):
-        model = RNNModule(
+        model = LSTMModule(
             vocab=self.vocab,
             rnn_size=self.params['rnn_size'],
             rnn_layers=1,
@@ -150,5 +116,5 @@ if __name__ == '__main__':
         'lr_high': 0.5,
         'lr_low': 0.01,
     }
-    model = RNN('rnn', params, random_seed=base.RANDOM_SEED)
+    model = LSTM(params, random_seed=base.RANDOM_SEED)
     model.main()

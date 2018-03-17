@@ -42,7 +42,7 @@ def load_raw_data():
 
 def load_data(dataset):
     path = os.path.join(DATA_DIR, f'{dataset}.csv')
-    cols = ['id'] + LABELS if dataset == 'train' else ['id']
+    cols = ['id'] + (LABELS if dataset == 'train' else []) + ['comment_text']
     df = pd.read_csv(path, usecols=cols)
     return df
 
