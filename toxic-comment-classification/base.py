@@ -68,7 +68,7 @@ class BaseModel(object):
         np.random.seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
         torch.manual_seed(int.from_bytes(self.random_state.bytes(4), byteorder=sys.byteorder))
 
-        preprocessed_data = preprocessing.load(self.params)
+        preprocessed_data = self.load_preprocessed_data()
         self.fields, self.vocab = self.build_fields_and_vocab(preprocessed_data)
 
         train_df = common.load_data('train')
@@ -113,6 +113,10 @@ class BaseModel(object):
         test_pred.to_csv(path, index=False)
 
         logger.info('Total elapsed time - {}'.format(datetime.now() - t_start))
+
+    def load_preprocessed_data(self):
+        preprocessed_data = preprocessing.load(self.params)
+        return preprocessed_data
 
     def build_fields_and_vocab(self, preprocessed_data):
         text_field = Field(pad_token='<PAD>', unk_token=None, batch_first=True, include_lengths=True)
