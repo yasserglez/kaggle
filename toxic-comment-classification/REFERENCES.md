@@ -12,7 +12,7 @@
 
 6. [Regularization of Neural Networks using DropConnect](https://cs.nyu.edu/~wanli/dropc/dropc.pdf)
 
-7. [Fine-tuned Language Models for Text Classification](Fine-tuned Language Models for Text Classification)
+7. [Fine-tuned Language Models for Text Classification](https://arxiv.org/abs/1801.06146)
 
 8. [Enriching Word Vectors with Subword Information](https://arxiv.org/abs/1607.04606)
 
