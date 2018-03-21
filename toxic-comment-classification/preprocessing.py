@@ -70,7 +70,7 @@ def preprocess_row(row):
 
 def preprocess(text):
 
-    # Convert to ASCII (unidecode does some clever transliterations)
+    # Convert to ASCII
     text = unidecode(text)
 
     # Strip whitespaces, double quotes in the CSV, Wikipedia syntax for indentation

@@ -16,10 +16,11 @@ import common
 import base
 from lstm import LSTM
 from gru import GRU
+from gcnn import GCNN
 from dpcnn import DPCNN
+from ngram import NGram
 from mlp import MLP
 from xgb import XGB
-from ngram import NGram
 
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ class Stacking(object):
     model_cls = {
         'lstm': LSTM,
         'gru': GRU,
+        'gcnn': GCNN,
         'dpcnn': DPCNN,
         'mlp': MLP,
         'xgb': XGB,
@@ -54,19 +56,14 @@ class Stacking(object):
             'lr_low': 0.01,
         },
         'gru': {
-            'vocab_size': 70000,
-            'max_len': 150,
-            'vectors': 'glove.42B.300d',
-            'rnn_size': 500,
-            'rnn_dropout': 0.2,
-            'proj_size': 150,
-            'proj_layers': 0,
-            'proj_dropout': 0.3,
-            'dense_layers': 1,
-            'dense_dropout': 0.5,
-            'batch_size': 128,
+            'vocab_size': 100000,
+            'max_len': 300,
+            'vectors': 'glove.twitter.27B.200d',
+            'annotation_dropout': 0.1,
+            'prediction_dropout': 0.3,
+            'batch_size': 256,
             'lr_high': 0.5,
-            'lr_low': 0.01,
+            'lr_low': 0.1,
         },
         'dpcnn': {
             'vocab_size': 50000,
@@ -117,6 +114,20 @@ class Stacking(object):
             'max_features': 50000,
             'C': 1.0,
         },
+        'gcnn': {
+            'vocab_size': 100000,
+            'max_len': 300,
+            'vectors': 'glove.42B.300d',
+            'num_blocks': 1,
+            'num_layers': 2,
+            'num_channels': 128,
+            'kernel_size': 3,
+            'dense_layers': 0,
+            'dense_dropout': 0.5,
+            'batch_size': 64,
+            'lr_high': 1.0,
+            'lr_low': 0.2,
+        }
     }
 
     def __init__(self, params, random_seed):
@@ -256,7 +267,20 @@ class Stacking(object):
 if __name__ == '__main__':
     params = {
         'input': 'all',
-        'models': ['lstm', 'dpcnn', 'mlp', 'xgb', 'char-ngram', 'word-ngram'],
+        'models': ['char-ngram', 'dpcnn', 'gcnn', 'lstm', 'mlp', 'word-ngram', 'xgb'],
+        'max_depth': 2,
+        'min_child_weight': 5,
+        'subsample': 0.5,
+        'colsample_bytree': 0.7,
+        'learning_rate': 0.2,
+        'patience': 25,
+    }
+    model = Stacking(params, random_seed=RANDOM_SEED)
+    model.main()
+
+    params = {
+        'input': 'all',
+        'models': ['char-ngram', 'dpcnn', 'gcnn', 'gru', 'lstm', 'mlp', 'word-ngram', 'xgb'],
         'max_depth': 2,
         'min_child_weight': 5,
         'subsample': 0.5,

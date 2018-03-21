@@ -27,9 +27,12 @@ def main():
                 path.append(params_str)
                 model_results = OrderedDict({'name': name})
                 for param in sorted(params_str.split('_')):
-                    k, v = param.split('=')
-                    k = k.replace('-', '_')
-                    model_results[k] = v
+                    try:
+                        k, v = param.split('=')
+                        k = k.replace('-', '_')
+                        model_results[k] = v
+                    except ValueError:
+                        pass
                 scores = []
                 for fold_num in range(1, 11):
                     fold_csv = os.path.join(*path, f'fold{fold_num}_validation.csv')
