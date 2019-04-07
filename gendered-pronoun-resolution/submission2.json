@@ -1,0 +1,17 @@
+{
+    "num_epochs": 30,
+    "batch_size": 24,
+    "lr": 0.01,
+    "lr_warmup": 0.1,
+    "beta1": 0.9,
+    "beta2": 0.9999,
+    "eps": 0.0001,
+    "weight_decay": ["choice", [0.003, 0.005]],
+    "dropout": 0.5,
+    "bert_model": ["choice", ["bert-large-cased", "bert-large-uncased"]],
+    "dist_size": 24,
+    "coref_layers": 2,
+    "coref_size": ["choice", [512, 768]],
+    "hidden_layers": ["choice", [1, 2]],
+    "hidden_size": 512
+}
