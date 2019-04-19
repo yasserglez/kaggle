@@ -52,7 +52,7 @@ def load_train_val_examples(random_seed, train_size=0.9) -> Tuple[List[GAPExampl
     return train_examples, val_examples
 
 
-def load_test_examples(tsv_path: Path = DATA_DIR / 'test_stage_1.tsv') -> List[GAPExample]:
+def load_test_examples(tsv_path: Path = DATA_DIR / 'test_stage_2.tsv') -> List[GAPExample]:
     examples = _load_gap(tsv_path)
     return examples
 
@@ -111,7 +111,7 @@ def _word_tokenizer(text: str) -> List[str]:
             for token in sentence:
                 # Split tokens on additional characters not handled by syntok
                 token_value = token.value
-                for c in ('/', r'\*', "'", r'\.', '--'):
+                for c in ('/', r'\*', "'", r'\.', '--', ':'):
                     token_value = re.sub(rf'({c})', r' \1 ', token_value)
                 tokens.extend(token_value.split())
     return tokens

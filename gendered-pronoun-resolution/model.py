@@ -55,6 +55,8 @@ class BertFeatures(object):
             tokens_offsets[token_index] = \
                 len(wordpiece_tokens), len(wordpiece_tokens) + len(split_tokens) - 1
             wordpiece_tokens.extend(split_tokens)
+        # Add an entry for the end of the spans (which are not inclusive).
+        tokens_offsets[len(tokens_offsets)] = len(wordpiece_tokens), len(wordpiece_tokens)
         return wordpiece_tokens, tokens_offsets
 
     def _prepare_input(self, wordpiece_tokens: List[str],
